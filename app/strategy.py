@@ -46,7 +46,8 @@ class BaseStrategy(ABC):
             kite=self.kite,
             symbol=self.symbol,
             quantity=self.quantity,
-            transaction_type=side
+            transaction_type=side,
+            dry_run=True          # ← Force dry run for today’s testing
         )
         if result["success"]:
             self.position = self.quantity if side == "BUY" else -self.quantity
@@ -81,18 +82,20 @@ class TestStrategy(BaseStrategy):
     - Enters Long once
     - Exits when Profit Target or Stop Loss is hit (simulated)
     """
-
+class TestStrategy(BaseStrategy):
     def __init__(self, kite: KiteConnect, 
                  profit_target: float = 25.0, 
                  stop_loss: float = 15.0,
-                 simulated_move: float = 30.0):
+                 simulated_move: float = 30.0,
+                 force_dry_run: bool = True):        # ← Add this
         super().__init__(kite)
         self.has_entered = False
         self.profit_target = profit_target
         self.stop_loss = stop_loss
         self.simulated_move = simulated_move
         self.current_simulated_price = 0.0
-
+        self.force_dry_run = force_dry_run            # ← Add this
+        
     def should_enter_long(self) -> bool:
         if not self.has_entered and risk_gatekeeper.is_flat():
             self.has_entered = True
