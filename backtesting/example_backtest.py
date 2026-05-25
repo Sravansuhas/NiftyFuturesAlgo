@@ -48,7 +48,7 @@ class SimpleBreakoutStrategy(BaseBacktestStrategy):
 
     def on_exit(self, bar: pd.Series, position: int, entry_price: float) -> bool:
         current_price = bar['close']
-        pnl = (current_price - entry_price) * position
+        pnl = current_price - entry_price if position > 0 else entry_price - current_price
 
         if pnl >= self.profit_target or pnl <= -self.stop_loss:
             self.position = 0
@@ -76,7 +76,7 @@ def generate_sample_data(n_bars: int = 600) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    print("🚀 Running Example Backtest...")
+    print("Running Example Backtest...")
 
     data = generate_sample_data(700)
     strategy = SimpleBreakoutStrategy(profit_target=25.0, stop_loss=15.0)
@@ -84,7 +84,7 @@ if __name__ == "__main__":
     backtester = Backtester(strategy, initial_capital=1_000_000)
     results = backtester.run(data)
 
-    print("\n📊 Backtest Summary:")
-    print(f"Final Equity : ₹{results['final_equity']:,.2f}")
+    print("\nBacktest Summary:")
+    print(f"Final Equity : Rs {results['final_equity']:,.2f}")
     print(f"Total Return : {results['total_return_pct']:.2f}%")
     print(f"Total Trades : {len([t for t in results['trades'] if 'exit_time' in t])}")

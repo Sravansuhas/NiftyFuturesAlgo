@@ -1,17 +1,25 @@
+from pathlib import Path
+
+from dotenv import set_key
 from kiteconnect import KiteConnect
+
 from config import KITE_API_KEY, KITE_API_SECRET
+
+
+ENV_PATH = Path(".env")
 
 kite = KiteConnect(api_key=KITE_API_KEY)
 
-# Step 1: Get login URL
 print("Login URL:", kite.login_url())
-
-# After login, paste the request_token here
 request_token = input("Paste the request_token from redirect URL: ").strip()
 
-# Step 2: Generate session (this gives both access_token and refresh_token)
 data = kite.generate_session(request_token, api_secret=KITE_API_SECRET)
 
-print("\n✅ New tokens generated successfully!")
-print("Access Token :", data["access_token"])
-print("Refresh Token:", data["refresh_token"])
+ENV_PATH.touch(exist_ok=True)
+set_key(str(ENV_PATH), "KITE_API_KEY", KITE_API_KEY)
+set_key(str(ENV_PATH), "KITE_API_SECRET", KITE_API_SECRET)
+set_key(str(ENV_PATH), "KITE_ACCESS_TOKEN", data["access_token"])
+if data.get("refresh_token"):
+    set_key(str(ENV_PATH), "KITE_REFRESH_TOKEN", data["refresh_token"])
+
+print("New tokens saved to .env.")

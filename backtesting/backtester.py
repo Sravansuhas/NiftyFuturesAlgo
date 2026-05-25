@@ -1,11 +1,12 @@
 """
 backtesting/backtester.py
-Clean, modular backtesting engine.
+Clean, modular futures backtesting engine.
 """
 
-from typing import List, Dict, Any
-import pandas as pd
 from abc import ABC, abstractmethod
+from typing import Any, Dict, List
+
+import pandas as pd
 
 
 class BaseBacktestStrategy(ABC):
@@ -19,7 +20,7 @@ class BaseBacktestStrategy(ABC):
         """
         Called on every new bar (candle).
         Should return a dict with signal info, e.g.:
-        {'signal': 'BUY' or 'SELL' or None, 'price': float}
+        {'signal': 'BUY' or 'SELL' or None, 'price': float, 'quantity': int}
         """
         pass
 
@@ -30,14 +31,22 @@ class BaseBacktestStrategy(ABC):
 
 
 class Backtester:
-    def __init__(self, strategy: BaseBacktestStrategy, initial_capital: float = 1_000_000):
+    def __init__(self, strategy: BaseBacktestStrategy, initial_capital: float = 1_000_000, default_quantity: int = 75):
         self.strategy = strategy
         self.initial_capital = initial_capital
+        self.default_quantity = default_quantity
         self.cash = initial_capital
         self.position = 0
         self.entry_price = 0.0
+        self.entry_time = None
         self.trades: List[Dict] = []
         self.equity_curve: List[float] = []
+
+    def _mark_to_market_equity(self, current_price: float) -> float:
+        unrealized_pnl = 0.0
+        if self.position != 0:
+            unrealized_pnl = (current_price - self.entry_price) * self.position
+        return self.cash + unrealized_pnl
 
     def run(self, data: pd.DataFrame) -> Dict[str, Any]:
         """
@@ -45,53 +54,58 @@ class Backtester:
         DataFrame must have columns: ['open', 'high', 'low', 'close', 'volume']
         with DateTimeIndex.
         """
-        print(f"\n🚀 Starting Backtest on {len(data)} bars...")
+        required_columns = {"open", "high", "low", "close", "volume"}
+        missing_columns = required_columns - set(data.columns)
+        if missing_columns:
+            raise ValueError(f"Backtest data missing columns: {sorted(missing_columns)}")
+        if data.empty:
+            raise ValueError("Backtest data is empty")
+
+        print(f"\nStarting backtest on {len(data)} bars...")
 
         for idx, bar in data.iterrows():
-            # Update equity
-            current_price = bar['close']
-            equity = self.cash + (self.position * current_price)
-            self.equity_curve.append(equity)
+            current_price = float(bar["close"])
 
-            # Check for exit first
-            if self.position != 0:
-                if self.strategy.on_exit(bar, self.position, self.entry_price):
-                    pnl = (current_price - self.entry_price) * self.position
-                    self.cash += pnl
-                    self.trades.append({
-                        'exit_time': idx,
-                        'exit_price': current_price,
-                        'pnl': pnl,
-                        'position': self.position
-                    })
-                    self.position = 0
-                    self.entry_price = 0.0
+            if self.position != 0 and self.strategy.on_exit(bar, self.position, self.entry_price):
+                pnl = (current_price - self.entry_price) * self.position
+                self.cash += pnl
+                self.trades.append({
+                    "entry_time": self.entry_time,
+                    "entry_price": self.entry_price,
+                    "exit_time": idx,
+                    "exit_price": current_price,
+                    "pnl": pnl,
+                    "quantity": abs(self.position),
+                    "direction": "BUY" if self.position > 0 else "SELL",
+                })
+                self.position = 0
+                self.entry_price = 0.0
+                self.entry_time = None
 
-            # Check for new entry
             if self.position == 0:
                 signal = self.strategy.on_bar(bar)
-                if signal and signal.get('signal') in ['BUY', 'SELL']:
-                    direction = 1 if signal['signal'] == 'BUY' else -1
-                    self.position = direction * 75  # 1 lot for now
-                    self.entry_price = current_price
-                    self.trades.append({
-                        'entry_time': idx,
-                        'entry_price': current_price,
-                        'direction': signal['signal']
-                    })
+                if signal and signal.get("signal") in {"BUY", "SELL"}:
+                    direction = 1 if signal["signal"] == "BUY" else -1
+                    quantity = int(signal.get("quantity", self.default_quantity))
+                    if quantity <= 0:
+                        raise ValueError(f"Invalid signal quantity: {quantity}")
+                    self.position = direction * quantity
+                    self.entry_price = float(signal.get("price", current_price))
+                    self.entry_time = idx
 
-        # Final equity
-        final_equity = self.cash + (self.position * data['close'].iloc[-1])
+            self.equity_curve.append(self._mark_to_market_equity(current_price))
+
+        final_equity = self._mark_to_market_equity(float(data["close"].iloc[-1]))
         total_return = ((final_equity - self.initial_capital) / self.initial_capital) * 100
 
-        print(f"\n✅ Backtest Completed")
-        print(f"Final Equity : ₹{final_equity:,.2f}")
+        print("\nBacktest completed")
+        print(f"Final Equity : Rs {final_equity:,.2f}")
         print(f"Total Return : {total_return:.2f}%")
-        print(f"Total Trades : {len([t for t in self.trades if 'exit_time' in t])}")
+        print(f"Total Trades : {len(self.trades)}")
 
         return {
-            'final_equity': final_equity,
-            'total_return_pct': total_return,
-            'trades': self.trades,
-            'equity_curve': self.equity_curve
+            "final_equity": final_equity,
+            "total_return_pct": total_return,
+            "trades": self.trades,
+            "equity_curve": self.equity_curve,
         }

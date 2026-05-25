@@ -1,6 +1,24 @@
-# config.py - Zerodha Kite Connect Credentials
-# IMPORTANT: Add this file to .gitignore (never commit API keys)
+"""
+Runtime configuration for the trading app.
 
-KITE_API_KEY = "d3bzooqtufh5hc3p"          # From Zerodha Developer Console
-KITE_API_SECRET = "qswkhdstc29fxlytubiaezrtwboin9n6"    # From Zerodha Developer Console
-KITE_ACCESS_TOKEN = "2vQCdaMSXEgmJSeFfjTTbh1LwIRKk4zC"  # This gets updated daily via generate_token.py
+Secrets must come from environment variables or a local .env file. Do not
+commit real Kite credentials or daily access tokens to source control.
+"""
+
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+KITE_API_KEY = _required_env("KITE_API_KEY")
+KITE_API_SECRET = _required_env("KITE_API_SECRET")
+KITE_ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN", "")
+KITE_REFRESH_TOKEN = os.getenv("KITE_REFRESH_TOKEN", "")

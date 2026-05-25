@@ -31,7 +31,7 @@ def generate_nifty_data(n_bars: int = 1200) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    print("🚀 Backtesting Previous Candle Breakout Strategy with Tuning...\n")
+    print("Backtesting Previous Candle Breakout Strategy with Tuning...\n")
 
     data = generate_nifty_data(1500)
 
@@ -67,7 +67,7 @@ if __name__ == "__main__":
             best_metrics = {**params, **metrics}
 
     print("\n" + "="*60)
-    print("🏆 BEST RESULT")
+    print("BEST RESULT")
     print("="*60)
     for k, v in best_metrics.items():
         print(f"{k}: {v}")

@@ -27,11 +27,11 @@ class TokenManager:
 
     def _handle_token_expiry(self):
         """Called automatically when Kite raises TokenException"""
-        print("⚠️ Access token has expired.")
+        print("Access token has expired.")
         self.token_valid = False
 
         if self.refresh_token:
-            print("🔄 Attempting to refresh access token...")
+            print("Attempting to refresh access token...")
             success = self._refresh_token()
             if success:
                 self.token_valid = True
@@ -39,7 +39,7 @@ class TokenManager:
             else:
                 self.needs_relogin = True
         else:
-            print("❌ No refresh token available. Manual re-login required.")
+            print("No refresh token available. Manual re-login required.")
             self.needs_relogin = True
 
     def _refresh_token(self) -> bool:
@@ -61,15 +61,15 @@ class TokenManager:
                     if new_refresh_token:
                         set_key(str(env_path), "KITE_REFRESH_TOKEN", new_refresh_token)
 
-                print("✅ Access token refreshed successfully.")
+                print("Access token refreshed successfully.")
                 return True
             return False
 
         except TokenException as e:
-            print(f"❌ Token refresh failed: {e}")
+            print(f"Token refresh failed: {e}")
             return False
         except Exception as e:
-            print(f"❌ Unexpected error during refresh: {e}")
+            print(f"Unexpected error during refresh: {e}")
             return False
 
     def is_token_valid(self) -> bool:

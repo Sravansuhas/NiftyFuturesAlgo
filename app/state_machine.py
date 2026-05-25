@@ -30,7 +30,7 @@ class TradingStateMachine:
         with self._lock:
             old_state = self._state
             self._state = new_state
-            print(f"[STATE MACHINE] Transition: {old_state.value} → {new_state.value}")
+            print(f"[STATE MACHINE] Transition: {old_state.value} -> {new_state.value}")
     
     def is_trading_allowed(self):
         allowed = {SystemState.TRADING_ENABLED, SystemState.PAPER_MODE, SystemState.LIVE_MODE}

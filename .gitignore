@@ -1,6 +1,10 @@
 # Environment & secrets
 .env
 
+# Runtime audit/log output
+data/
+logs/
+
 # Python
 __pycache__/
 *.py[cod]

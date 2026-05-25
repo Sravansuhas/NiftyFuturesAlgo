@@ -62,7 +62,7 @@ class LiveStrategyAdapter(BaseBacktestStrategy):
 
     def on_exit(self, bar: pd.Series, position: int, entry_price: float) -> bool:
         current_price = bar['close']
-        pnl = (current_price - entry_price) * position
+        pnl = current_price - entry_price if position > 0 else entry_price - current_price
 
         if pnl >= self.live_strategy.profit_target or pnl <= -self.live_strategy.stop_loss:
             self.position = 0

@@ -1,11 +1,19 @@
 """
 generate_token.py
-Clean script to generate/refresh Zerodha Kite Connect access token.
-Run this every morning before market open.
+Generate a Zerodha Kite Connect access token and store it in .env.
+Run this manually before market open when Zerodha requires a fresh login.
 """
 
+from pathlib import Path
+
+from dotenv import set_key
 from kiteconnect import KiteConnect
+
 import config
+
+
+ENV_PATH = Path(".env")
+
 
 def generate_access_token():
     print("=" * 60)
@@ -13,40 +21,36 @@ def generate_access_token():
     print("=" * 60)
 
     kite = KiteConnect(api_key=config.KITE_API_KEY)
-
-    # Step 1: Get login URL
     login_url = kite.login_url()
+
     print("\n[STEP 1] Open this URL in your browser and login with Zerodha:")
     print(login_url)
-    print("\nAfter login, you will be redirected to a URL like:")
-    print("http://localhost:5000/?request_token=XXXXXXXXXXXXXXXX&action=login&status=success")
-    print("\n[STEP 2] Copy the 'request_token' value from that URL and paste it below.")
+    print("\n[STEP 2] Copy the request_token value from the redirect URL.")
 
     request_token = input("\nPaste the request_token here: ").strip()
-
     if not request_token:
-        print("❌ No request_token provided. Exiting.")
+        print("No request_token provided. Exiting.")
         return
 
     try:
-        # Step 3: Generate session and get access_token
         data = kite.generate_session(request_token, api_secret=config.KITE_API_SECRET)
         access_token = data["access_token"]
+        refresh_token = data.get("refresh_token", "")
 
-        print("\n" + "=" * 60)
-        print("✅ SUCCESS! New Access Token Generated:")
-        print("=" * 60)
-        print(f"\n{access_token}\n")
-        print("Copy the above token and update KITE_ACCESS_TOKEN in config.py")
-        print("=" * 60)
+        ENV_PATH.touch(exist_ok=True)
+        set_key(str(ENV_PATH), "KITE_API_KEY", config.KITE_API_KEY)
+        set_key(str(ENV_PATH), "KITE_API_SECRET", config.KITE_API_SECRET)
+        set_key(str(ENV_PATH), "KITE_ACCESS_TOKEN", access_token)
+        if refresh_token:
+            set_key(str(ENV_PATH), "KITE_REFRESH_TOKEN", refresh_token)
 
-        # Optional: Show how to update config.py
-        print("\nTo auto-update config.py in future, we can enhance this script.")
-        print("For now, manually paste the token into config.py under KITE_ACCESS_TOKEN.")
+        print("\nSUCCESS! Tokens saved to .env.")
+        print("Keep .env out of git and rotate any credentials that were previously committed.")
 
-    except Exception as e:
-        print(f"\n❌ Error generating session: {e}")
-        print("Common reasons: Wrong API secret, expired request_token, or network issue.")
+    except Exception as exc:
+        print(f"\nError generating session: {exc}")
+        print("Common reasons: wrong API secret, expired request_token, or network issue.")
+
 
 if __name__ == "__main__":
     generate_access_token()

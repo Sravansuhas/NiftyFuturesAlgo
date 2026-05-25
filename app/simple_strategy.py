@@ -19,16 +19,16 @@ class SimpleStrategy:
         For now, this is just a placeholder.
         """
         # Example: You can later add technical indicators here
-        return True   # Placeholder — always true for testing
+        return True   # Placeholder - always true for testing
 
     def run(self):
         """Main strategy loop"""
-        print("\n🚀 Simple Strategy Started...")
+        print("\nSimple Strategy Started...")
 
         while True:
             # Check if we can place an order
             if risk_gatekeeper.can_place_order() and self.should_enter_long():
-                print("📈 Signal: Attempting Long Entry...")
+                print("Signal: Attempting Long Entry...")
 
                 result = risk_gatekeeper.place_guarded_order(
                     kite=self.kite,
@@ -38,9 +38,9 @@ class SimpleStrategy:
                 )
 
                 if result["success"]:
-                    print(f"✅ Order placed → {result.get('order_id')}")
+                    print(f"Order placed -> {result.get('order_id')}")
                 else:
-                    print(f"🚫 Order blocked/failed → {result.get('message')}")
+                    print(f"Order blocked/failed -> {result.get('message')}")
 
             # Sleep to avoid busy loop (adjust as needed)
             time.sleep(30)
