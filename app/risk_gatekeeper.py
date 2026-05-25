@@ -70,15 +70,19 @@ class RiskGatekeeper:
     # ============================================================
     # GUARDED ORDER PLACEMENT (Core Method)
     # ============================================================
+    
     def place_guarded_order(self, kite, symbol: str, quantity: int,
                             transaction_type: str, price: float = 0.0,
                             order_type: str = "MARKET", product: str = "MIS",
                             validity: str = "DAY", dry_run: bool = None,
-                            is_exit: bool = False) -> dict:
+                            is_exit: bool = False, force_dry_run: bool = False) -> dict:
 
         from market_calendar import is_market_open
 
-        if dry_run is None:
+        # If force_dry_run is True, always stay in dry-run mode
+        if force_dry_run:
+            dry_run = True
+        elif dry_run is None:
             dry_run = not is_market_open()
 
         mode = "DRY RUN" if dry_run else "REAL"
@@ -91,7 +95,7 @@ class RiskGatekeeper:
                 "message": "Order blocked by risk gates"
             }
 
-        # === DRY RUN MODE ===
+        # Dry Run Mode
         if dry_run:
             self.on_order_placed(symbol, quantity, transaction_type, price, is_exit=is_exit)
             action = "Exit simulated" if is_exit else "Simulated successfully"
@@ -102,7 +106,7 @@ class RiskGatekeeper:
                 "message": "Dry run completed successfully"
             }
 
-        # === REAL ORDER MODE ===
+        # Real Order Mode
         try:
             order_id = kite.place_order(
                 variety="regular",
@@ -138,7 +142,7 @@ class RiskGatekeeper:
                 "order_id": None,
                 "message": str(e)
             }
-
+    
     # ============================================================
     # POSITION UPDATE (Single Source of Truth)
     # ============================================================
