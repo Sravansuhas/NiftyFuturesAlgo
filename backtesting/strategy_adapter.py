@@ -26,38 +26,51 @@ class LiveStrategyAdapter(BaseBacktestStrategy):
         )
         self.position = 0
         self.entry_price = 0.0
+        self.prev_high = 0.0
+        self.prev_low = 0.0
 
     def on_bar(self, bar: pd.Series) -> Optional[Dict[str, Any]]:
         """
-        Convert DataFrame row into something the live strategy can understand,
-        then check for entry signals.
+        Use the improved live strategy for signal logic where possible, but fall back to
+        safe local previous-candle tracking for backtest (no private method dependency).
+        The dedicated PreviousCandleBacktestStrategy is preferred for clean backtests.
         """
-        current_price = bar['close']
+        current_price = float(bar['close'])
+        current_high = float(bar.get('high', current_price))
+        current_low = float(bar.get('low', current_price))
 
-        # Feed current price into the live strategy's internal logic
-        # We manually update previous candle levels for backtesting
-        self.live_strategy._update_previous_candle(current_price)
+        # Maintain our own simple previous state (live_strategy may have its own)
+        if self.prev_high == 0 or self.prev_low == 0:
+            self.prev_high = current_high
+            self.prev_low = current_low
+            return None
 
-        # Check for long breakout
         if (not self.live_strategy.has_entered_today and
-            self.live_strategy.prev_high > 0 and
-            current_price > self.live_strategy.prev_high):
+            self.prev_high > 0 and
+            current_price > self.prev_high + 4):
 
             self.entry_price = current_price
             self.position = 75
             self.live_strategy.has_entered_today = True
-            return {'signal': 'BUY', 'price': current_price}
+            # Roll
+            self.prev_high = current_high
+            self.prev_low = current_low
+            return {'signal': 'BUY', 'price': current_price, 'quantity': 75}
 
-        # Check for short breakout
         if (not self.live_strategy.has_entered_today and
-            self.live_strategy.prev_low > 0 and
-            current_price < self.live_strategy.prev_low):
+            self.prev_low > 0 and
+            current_price < self.prev_low - 4):
 
             self.entry_price = current_price
             self.position = -75
             self.live_strategy.has_entered_today = True
-            return {'signal': 'SELL', 'price': current_price}
+            self.prev_high = current_high
+            self.prev_low = current_low
+            return {'signal': 'SELL', 'price': current_price, 'quantity': 75}
 
+        # Roll even on no signal
+        self.prev_high = current_high
+        self.prev_low = current_low
         return None
 
     def on_exit(self, bar: pd.Series, position: int, entry_price: float) -> bool:

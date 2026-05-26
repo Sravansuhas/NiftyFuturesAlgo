@@ -36,4 +36,11 @@ class TradingStateMachine:
         allowed = {SystemState.TRADING_ENABLED, SystemState.PAPER_MODE, SystemState.LIVE_MODE}
         return self._state in allowed
 
+    def is_paper_or_live(self):
+        return self._state in {SystemState.PAPER_MODE, SystemState.LIVE_MODE}
+
+    def emergency_halt(self, reason: str = ""):
+        self.set_state(SystemState.EMERGENCY_HALT)
+        print(f"[STATE] EMERGENCY HALT: {reason}")
+
 state_machine = TradingStateMachine()

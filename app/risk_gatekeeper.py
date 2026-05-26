@@ -5,8 +5,8 @@ from typing import Dict, Optional
 
 from kiteconnect import KiteConnect
 
-from audit_logger import audit_logger
-from state_machine import SystemState, state_machine
+from .audit_logger import audit_logger
+from .state_machine import SystemState, state_machine
 
 
 @dataclass(frozen=True)
@@ -64,13 +64,17 @@ class RiskGatekeeper:
         return self.position["quantity"]
 
     def calculate_order_quantity(self, entry_price: float, stop_price: float) -> int:
+        if self.capital <= 0:
+            return self.config.lot_size
         stop_distance = abs(entry_price - stop_price)
-        if stop_distance <= 0:
-            raise ValueError("stop_price must be different from entry_price")
+        if stop_distance <= 1.0:  # minimum realistic tick distance for safety
+            stop_distance = 10.0
 
         multiplier = self.config.reduced_risk_multiplier if self.consecutive_losses >= self.config.loss_streak_threshold else 1.0
         risk_amount = self.capital * self.config.risk_per_trade_pct * multiplier
         lot_risk = stop_distance * self.config.lot_size
+        if lot_risk <= 0:
+            return self.config.lot_size
         lots = max(1, int(risk_amount / lot_risk))
         lots = min(lots, self.config.max_lots)
         return lots * self.config.lot_size
@@ -303,8 +307,8 @@ class RiskGatekeeper:
     def sync_with_broker(self, broker_net_positions: list):
         nifty_futures_positions = [
             position for position in broker_net_positions
-            if position.get("tradingsymbol", "").startswith("NIFTY")
-            and position.get("tradingsymbol", "").endswith("FUT")
+            if str(position.get("tradingsymbol", "")).startswith("NIFTY")
+            and str(position.get("tradingsymbol", "")).endswith("FUT")
         ]
 
         if not nifty_futures_positions:
@@ -315,10 +319,21 @@ class RiskGatekeeper:
             self.pending_orders.clear()
             return
 
-        pos = nifty_futures_positions[0]
-        broker_qty = pos.get("quantity", 0)
-        broker_symbol = pos.get("tradingsymbol")
-        broker_avg = pos.get("average_price", 0.0)
+        # Edge case: multiple Nifty fut positions (rare) — net them and alarm if conflicting
+        if len(nifty_futures_positions) > 1:
+            print("⚠️ MULTIPLE NIFTY FUT POSITIONS DETECTED — netting for safety")
+            net_qty = sum(p.get("quantity", 0) for p in nifty_futures_positions)
+            # Use first symbol for simplicity; in reality you may want to flatten all
+            pos = nifty_futures_positions[0]
+            broker_qty = net_qty
+            broker_symbol = pos.get("tradingsymbol")
+            broker_avg = pos.get("average_price", 0.0)
+            self._trigger_mismatch_alarm()
+        else:
+            pos = nifty_futures_positions[0]
+            broker_qty = pos.get("quantity", 0)
+            broker_symbol = pos.get("tradingsymbol")
+            broker_avg = pos.get("average_price", 0.0)
 
         if self.position["quantity"] != broker_qty or self.position["symbol"] != broker_symbol:
             print("POSITION MISMATCH DETECTED")
@@ -400,6 +415,18 @@ class RiskGatekeeper:
         elif realized_pnl > 0:
             self.consecutive_losses = 0
         self.update_equity(self.capital + self.daily_pnl)
+
+    def reset_daily(self):
+        """Reset per-trading-day counters. Called by main loop on new market day."""
+        self.daily_pnl = 0.0
+        self.daily_loss = 0.0
+        self.trades_today = 0
+        # consecutive_losses may be carried or reset — reset for fresh day risk budget
+        self.consecutive_losses = 0
+        self.peak_equity = self.capital
+        self.current_equity = self.capital
+        self.pending_orders.clear()
+        print("[RISK] Daily counters reset (new trading day)")
 
 
 risk_gatekeeper = RiskGatekeeper(capital=1_000_000.0)

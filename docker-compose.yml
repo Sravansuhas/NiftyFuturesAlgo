@@ -47,7 +47,8 @@ services:
       redis:
         condition: service_healthy  
     volumes:
-      - ./app:/app/app
+      # Full bind for development so root config.py + app package are both visible
+      - .:/app
     restart: unless-stopped
 
 volumes:

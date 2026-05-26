@@ -4,12 +4,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP = ROOT / "app"
-if str(APP) not in sys.path:
-    sys.path.insert(0, str(APP))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from risk_gatekeeper import RiskConfig, RiskGatekeeper
-from state_machine import SystemState, state_machine
+from app.risk_gatekeeper import RiskConfig, RiskGatekeeper
+from app.state_machine import SystemState, state_machine
 
 
 class FakeKite:
@@ -90,6 +89,19 @@ class RiskGatekeeperTests(unittest.TestCase):
         self.risk.update_daily_loss(-1000)
         self.risk.update_daily_loss(-1000)
         self.assertEqual(self.risk.calculate_order_quantity(24500, 24475), 75)
+
+    def test_daily_reset_clears_counters(self):
+        self.risk.update_daily_loss(-5000)
+        self.risk.trades_today = 2
+        self.risk.reset_daily()
+        self.assertEqual(self.risk.daily_loss, 0.0)
+        self.assertEqual(self.risk.trades_today, 0)
+        self.assertEqual(self.risk.consecutive_losses, 0)
+
+    def test_calculate_handles_tiny_stop_distance(self):
+        q = self.risk.calculate_order_quantity(24500, 24499.5)  # <1pt
+        self.assertTrue(q >= 75 and q <= 300)
+        self.assertEqual(q % 75, 0)
 
 
 if __name__ == "__main__":

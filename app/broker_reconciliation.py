@@ -2,9 +2,9 @@ import time
 
 from kiteconnect import KiteConnect
 
-from audit_logger import audit_logger
-from risk_gatekeeper import risk_gatekeeper
-from state_machine import SystemState, state_machine
+from .audit_logger import audit_logger
+from .risk_gatekeeper import risk_gatekeeper
+from .state_machine import SystemState, state_machine
 
 
 class BrokerReconciliation:
@@ -64,15 +64,19 @@ class BrokerReconciliation:
 
             status = str(broker_order.get("status", "")).upper()
             if status in {"COMPLETE", "REJECTED", "CANCELLED"}:
+                filled = broker_order.get("filled_quantity", 0) or 0
                 audit_logger.record("order.status", {
                     "order_id": order_id,
                     "status": status,
                     "average_price": broker_order.get("average_price"),
-                    "filled_quantity": broker_order.get("filled_quantity"),
+                    "filled_quantity": filled,
                     "pending": pending,
                 })
-                if status in {"REJECTED", "CANCELLED"}:
-                    risk_gatekeeper.pending_orders.pop(order_id, None)
+                # Terminal status — remove from pending (COMPLETE will be reflected in next position sync)
+                risk_gatekeeper.pending_orders.pop(order_id, None)
+                # Partial fill edge: if partial COMPLETE, risk_gatekeeper on_order_placed can be called by recon if needed
+                if status == "COMPLETE" and filled > 0 and filled < pending.get("quantity", filled):
+                    print(f"Partial fill detected for {order_id}: {filled}/{pending.get('quantity')}")
 
     def _handle_reconciliation_failure(self, error_type: str):
         self.consecutive_failures += 1

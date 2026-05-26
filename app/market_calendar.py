@@ -81,3 +81,34 @@ def is_entry_window_open(at: datetime.datetime = None) -> bool:
     first_entry = datetime.time(9, 30)
     last_entry = datetime.time(15, 0)
     return first_entry <= current.time() <= last_entry
+
+
+def is_expiry_day(d: datetime.date = None) -> bool:
+    """Approximate Nifty futures expiry (last Thursday of the month)."""
+    day = d or now_ist().date()
+    # Last Thursday: find the last Thu <= last day of month
+    if day.weekday() != 3:  # not Thursday
+        return False
+    # Check if this Thursday is the last one in the month
+    next_month = day.replace(day=28) + datetime.timedelta(days=4)
+    last_day = next_month - datetime.timedelta(days=next_month.day)
+    last_thu = last_day - datetime.timedelta(days=(last_day.weekday() - 3) % 7)
+    return day == last_thu or (day >= last_thu - datetime.timedelta(days=1) and day <= last_thu)
+
+
+def get_nifty_expiry_for_month(year: int, month: int) -> datetime.date:
+    """Return the expiry date (last Thursday) for given year/month."""
+    d = datetime.date(year, month, 28)
+    next_month = d + datetime.timedelta(days=4)
+    last = next_month - datetime.timedelta(days=next_month.day)
+    last_thu = last - datetime.timedelta(days=(last.weekday() - 3) % 7)
+    return last_thu
+
+
+# Extend holidays for 2027 (placeholder — update when NSE publishes)
+MARKET_HOLIDAYS_2027 = {
+    datetime.date(2027, 1, 26),
+    datetime.date(2027, 3, 8),   # approx Holi etc. (update from official circular)
+    # ... add real dates when published
+}
+MARKET_HOLIDAYS = MARKET_HOLIDAYS_2026 | MARKET_HOLIDAYS_2027  # union for multi-year support

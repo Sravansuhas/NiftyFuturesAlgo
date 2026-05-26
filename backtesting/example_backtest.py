@@ -81,7 +81,7 @@ if __name__ == "__main__":
     data = generate_sample_data(700)
     strategy = SimpleBreakoutStrategy(profit_target=25.0, stop_loss=15.0)
 
-    backtester = Backtester(strategy, initial_capital=1_000_000)
+    backtester = Backtester(strategy, initial_capital=1_000_000, slippage_pts=4.0, commission_per_lot=25.0)
     results = backtester.run(data)
 
     print("\nBacktest Summary:")

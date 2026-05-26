@@ -1,5 +1,5 @@
 import time
-from risk_gatekeeper import risk_gatekeeper
+from .risk_gatekeeper import risk_gatekeeper
 
 
 class SimpleStrategy:

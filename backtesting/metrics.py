@@ -26,7 +26,10 @@ def calculate_metrics(trades: List[Dict], equity_curve: List[float], initial_cap
 
     total_trades = len(completed_trades)
     win_rate = len(wins) / total_trades if total_trades > 0 else 0
-    profit_factor = sum(wins) / abs(sum(losses)) if sum(losses) != 0 else float('inf')
+    if sum(losses) == 0:
+        profit_factor = float('inf') if wins else 0.0
+    else:
+        profit_factor = sum(wins) / abs(sum(losses))
 
     final_equity = equity_curve[-1] if equity_curve else initial_capital
     total_return = ((final_equity - initial_capital) / initial_capital) * 100
@@ -48,7 +51,7 @@ def calculate_metrics(trades: List[Dict], equity_curve: List[float], initial_cap
     return {
         "total_trades": total_trades,
         "win_rate_pct": round(win_rate * 100, 2),
-        "profit_factor": round(profit_factor, 2),
+        "profit_factor": round(profit_factor, 2) if profit_factor != float('inf') else "inf",
         "total_return_pct": round(total_return, 2),
         "max_drawdown_pct": round(max_dd, 2),
         "expectancy": round(expectancy, 2),

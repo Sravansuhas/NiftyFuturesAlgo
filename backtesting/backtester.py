@@ -31,10 +31,17 @@ class BaseBacktestStrategy(ABC):
 
 
 class Backtester:
-    def __init__(self, strategy: BaseBacktestStrategy, initial_capital: float = 1_000_000, default_quantity: int = 75):
+    def __init__(self, strategy: BaseBacktestStrategy, initial_capital: float = 1_000_000,
+                 default_quantity: int = 75, slippage_pts: float = 3.0, commission_per_lot: float = 20.0):
+        """
+        slippage_pts: round-turn points to subtract from theoretical fill price (realistic for Nifty FUT)
+        commission_per_lot: approx transaction cost per lot (brokerage + STT + other; tune to your broker)
+        """
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.default_quantity = default_quantity
+        self.slippage_pts = slippage_pts
+        self.commission_per_lot = commission_per_lot
         self.cash = initial_capital
         self.position = 0
         self.entry_price = 0.0
@@ -67,7 +74,12 @@ class Backtester:
             current_price = float(bar["close"])
 
             if self.position != 0 and self.strategy.on_exit(bar, self.position, self.entry_price):
-                pnl = (current_price - self.entry_price) * self.position
+                # Apply realistic costs on exit
+                effective_exit = current_price - (self.slippage_pts if self.position > 0 else -self.slippage_pts)
+                gross_pnl = (effective_exit - self.entry_price) * self.position
+                lots = max(1, abs(self.position) // 75)
+                costs = lots * self.commission_per_lot * 2  # round turn
+                pnl = gross_pnl - costs
                 self.cash += pnl
                 self.trades.append({
                     "entry_time": self.entry_time,
@@ -77,6 +89,8 @@ class Backtester:
                     "pnl": pnl,
                     "quantity": abs(self.position),
                     "direction": "BUY" if self.position > 0 else "SELL",
+                    "slippage_pts": self.slippage_pts,
+                    "costs": costs,
                 })
                 self.position = 0
                 self.entry_price = 0.0
@@ -89,8 +103,10 @@ class Backtester:
                     quantity = int(signal.get("quantity", self.default_quantity))
                     if quantity <= 0:
                         raise ValueError(f"Invalid signal quantity: {quantity}")
+                    # Apply slippage on entry fill
+                    effective_entry = current_price + (self.slippage_pts if direction > 0 else -self.slippage_pts)
                     self.position = direction * quantity
-                    self.entry_price = float(signal.get("price", current_price))
+                    self.entry_price = effective_entry
                     self.entry_time = idx
 
             self.equity_curve.append(self._mark_to_market_equity(current_price))

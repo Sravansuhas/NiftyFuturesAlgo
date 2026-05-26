@@ -7,4 +7,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "-u", "app/main.py"]
+ENV PYTHONPATH=/app
+# Use module form so relative imports and package structure work reliably
+CMD ["python", "-u", "-m", "app.main"]
