@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Algo Lab — NiftyFuturesAlgo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap');
+
+        :root {
+            --font-sans: 'Inter', system_ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+            /* Bloomberg-grade unified palette (shared with live terminal) */
+            --bg: #0A0C14;
+            --surface: #11141F;
+            --border: #252B3A;
+            --text: #E5E8F0;
+            --text-muted: #8A8F9E;
+            --positive: #22C55E;
+            --negative: #EF4444;
+            --warning: #F59E0B;
+            --info: #67E8F9;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            -webkit-font-smoothing: antialiased;
+            background-color: var(--bg);
+            color: var(--text);
+        }
+
+        .terminal-font {
+            font-family: var(--font-mono);
+            font-feature-settings: "ss02", "tnum";
+        }
+
+        .panel {
+            background-color: var(--surface);
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+        }
+
+        .metric {
+            font-feature-settings: "tnum";
+            font-variant-numeric: tabular-nums;
+        }
+
+        .section-header {
+            font-size: 0.75rem;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            font-weight: 600;
+            color: #64748B;
+        }
+
+        .data-table {
+            font-feature-settings: "tnum";
+        }
+
+        .data-table th {
+            font-weight: 500;
+            color: #64748B;
+            font-size: 0.65rem;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .pnl-positive { color: #22C55E; }
+        .pnl-negative { color: #F87171; }
+        .pnl-neutral { color: #E5E7EB; }
+    </style>
+</head>
+<body class="p-6 bg-[#0A0C14] text-[#E5E7EB]">
+    <div class="max-w-[1480px] mx-auto">
+        <!-- Stunning Market Rail (consistent with main terminal, Bloomberg professional) -->
+        <div id="market-rail-lab" 
+             class="mb-4 px-5 py-2 flex items-center justify-between bg-[#0f1118] border border-gray-800 rounded-3xl text-xs font-mono">
+            <div class="flex items-center gap-x-3">
+                <span class="font-semibold text-emerald-300">MARKET</span>
+                <div id="lab-market-pill" class="px-3 py-0.5 rounded-full border text-[10px] font-bold flex items-center gap-x-1.5">
+                    <span id="lab-market-dot" class="w-1.5 h-1.5 rounded-full"></span>
+                    <span id="lab-market-text">...</span>
+                </div>
+                <span id="lab-market-detail" class="text-gray-400"></span>
+            </div>
+            <div class="flex items-center gap-x-3 text-emerald-300">
+                <span id="lab-ist-clock" class="font-semibold"></span>
+                <a href="/" class="px-3 py-1 bg-[#111318] hover:bg-gray-800 border border-gray-700 rounded-2xl transition text-[10px]">← LIVE TERMINAL</a>
+            </div>
+        </div>
+
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-4">
+            <div>
+                <div class="flex items-center gap-3">
+                    <h1 class="text-4xl font-semibold tracking-tighter">NIFTY FUTURES ALGO LAB</h1>
+                    <span class="px-2.5 py-0.5 text-[10px] font-mono bg-emerald-900/60 text-emerald-400 rounded">v0.5.1 • HARDENED</span>
+                    <!-- Dynamic Research Mode Indicator -->
+                    <span id="research-mode-indicator" 
+                          class="hidden px-3 py-1 text-xs font-bold rounded-full bg-amber-900 text-amber-300 border border-amber-700">
+                        🔬 RESEARCH MODE ACTIVE
+                    </span>
+                </div>
+                <p class="text-gray-400 text-sm mt-0.5">Walk-forward validation • Auto-generated regime documentation • Real Kite fills &amp; cost learning</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <button onclick="window.location.reload()" class="px-4 py-2 text-sm bg-[#111318] hover:bg-[#1f2937] border border-gray-800 rounded-2xl transition">Refresh</button>
+            </div>
+        </div>
+
+        <!-- Tab Navigation (smooth JS tabs) -->
+        <div class="flex gap-1 mb-4 border-b border-gray-800 pb-1">
+            <button onclick="switchTab('run')" id="tab-btn-run"
+                    class="tab-btn active px-5 py-2 text-sm font-medium rounded-t-2xl bg-[#111318] border border-gray-700 border-b-0">1. Run Validation</button>
+            <button onclick="switchTab('results')" id="tab-btn-results"
+                    class="tab-btn px-5 py-2 text-sm font-medium rounded-t-2xl hover:bg-[#111318]">2. Results &amp; Charts</button>
+            <button onclick="switchTab('learnings')" id="tab-btn-learnings"
+                    class="tab-btn px-5 py-2 text-sm font-medium rounded-t-2xl hover:bg-[#111318]">3. Market Learnings &amp; Docs</button>
+            <button onclick="switchTab('fills')" id="tab-btn-fills"
+                    class="tab-btn px-5 py-2 text-sm font-medium rounded-t-2xl hover:bg-[#111318]">4. Real Fills &amp; Taxes (Kite)</button>
+            <button onclick="switchTab('presets')" id="tab-btn-presets"
+                    class="tab-btn px-5 py-2 text-sm font-medium rounded-t-2xl hover:bg-[#111318]">5. Presets &amp; Data</button>
+        </div>
+
+        <!-- ========== TAB: RUN VALIDATION ========== -->
+        <div id="tab-run" class="tab-content">
+            <div class="grid grid-cols-1 xl:grid-cols-12 gap-5">
+                <!-- Form -->
+                <div class="xl:col-span-5 panel rounded-3xl p-6">
+                    <div class="flex items-center justify-between mb-3">
+                        <h2 class="font-semibold text-lg">Configure Walk-Forward + Regime Backtest</h2>
+                        <span class="text-[10px] text-emerald-400">ROBUST LOGIC</span>
+                    </div>
+
+                    <!-- Presets -->
+                    <div class="mb-4">
+                        <div class="text-xs text-gray-400 mb-1.5">QUICK PRESETS (click to load)</div>
+                        <div class="flex flex-wrap gap-2">
+                            <button onclick="loadPreset('conservative')" class="text-xs px-3 py-1 rounded-2xl bg-[#0a0c12] border border-gray-700 hover:border-emerald-600">Conservative (post-blowup)</button>
+                            <button onclick="loadPreset('balanced')" class="text-xs px-3 py-1 rounded-2xl bg-[#0a0c12] border border-gray-700 hover:border-emerald-600">Balanced (current)</button>
+                            <button onclick="loadPreset('aggressive')" class="text-xs px-3 py-1 rounded-2xl bg-[#0a0c12] border border-gray-700 hover:border-emerald-600">Aggressive</button>
+                            <button onclick="loadPreset('live')" class="text-xs px-3 py-1 rounded-2xl bg-emerald-900/30 border border-emerald-700">Current Live Params</button>
+                        </div>
+                    </div>
+
+                    <form id="backtest-form" class="space-y-4">
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-xs text-gray-400 flex items-center gap-1">
+                                    Data Window (months)
+                                    <span title="How far back the historical data should go. Larger windows = more regime coverage but slower and more expensive (if using real Kite data)." class="cursor-help text-gray-500">ⓘ</span>
+                                </label>
+                                <input type="number" name="months" id="months" value="5" class="mt-1 w-full bg-[#0a0c12] border border-gray-700 p-2.5 rounded-2xl text-sm">
+                            </div>
+                            <div>
+                                <label class="text-xs text-gray-400 flex items-center gap-1">
+                                    Walk-Forward Folds
+                                    <span title="Number of rolling train/test splits. More folds = better statistical robustness but much slower." class="cursor-help text-gray-500">ⓘ</span>
+                                </label>
+                                <input type="number" name="folds" id="folds" value="5" class="mt-1 w-full bg-[#0a0c12] border border-gray-700 p-2.5 rounded-2xl text-sm">
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="text-xs text-gray-400 flex items-center gap-1">
+                                Risk per Trade Range (0.001 = 0.1%)
+                                <span title="The range of risk percentages the optimizer will try. Lower = safer sizing, higher = more aggressive." class="cursor-help text-gray-500">ⓘ</span>
+                            </label>
+                            <div class="flex gap-2 mt-1">
+                                <input type="number" step="0.0002" name="risk_low" id="risk_low" value="0.0032" class="w-full bg-[#0a0c12] border border-gray-700 p-2.5 rounded-2xl text-sm">
+                                <input type="number" step="0.0002" name="risk_high" id="risk_high" value="0.0038" class="w-full bg-[#0a0c12] border border-gray-700 p-2.5 rounded-2xl text-sm">
+                            </div>
+                        </div>
+
+                        <div class="flex items-center gap-2 pt-1">
+                            <input type="checkbox" name="use_real_data" id="use_real_data" class="w-4 h-4 accent-emerald-500" checked>
+                            <label for="use_real_data" class="text-sm">Use real multi-month Kite historical data</label>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <input type="checkbox" name="force_refresh" id="force_refresh" class="w-4 h-4 accent-red-500">
+                            <label for="force_refresh" class="text-sm text-red-300">Force Refresh from Kite (ignore local cache)</label>
+                        </div>
+
+                        <!-- Realism & Exploration (grouped as requested) -->
+                        <details class="pt-2 border-t border-gray-700">
+                            <summary class="text-sm font-medium text-amber-400 cursor-pointer select-none">Realism &amp; Exploration</summary>
+                            <div class="space-y-3 pt-3">
+                                <div class="flex items-center gap-2">
+                                    <input type="checkbox" name="research_mode" id="research_mode" class="w-4 h-4 accent-amber-500" onchange="handleResearchModeToggle()">
+                                    <label for="research_mode" class="text-sm text-amber-300">Research Mode (Relaxes filters)</label>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <input type="checkbox" name="entry_on_next_bar" id="entry_on_next_bar" class="w-4 h-4 accent-blue-500">
+                                    <label for="entry_on_next_bar" class="text-sm">Entry on Next Bar (Recommended for realism)</label>
+                                </div>
+                            </div>
+                        </details>
+
+                        <!-- Quick Mode for fast iteration -->
+                        <div class="pt-2 border-t border-gray-700">
+                            <label class="flex items-center gap-2 text-sm">
+                                <input type="checkbox" name="quick_mode" id="quick_mode" class="w-4 h-4 accent-cyan-500" onchange="handleQuickModeToggle()">
+                                <span class="font-medium text-cyan-400">Quick Mode (Fast iteration)</span>
+                            </label>
+                            <div class="text-[10px] text-cyan-400/70 pl-6">1 fold • tiny grid • synthetic data • Research Mode + Next Bar forced. Use for daily parameter exploration + full pipeline validation (MC + GPU + costs).</div>
+                        </div>
+
+                        <!-- Advanced Options (hides most ⓘ tooltips) -->
+                        <details class="pt-2 border-t border-gray-700">
+                            <summary class="text-sm font-medium text-gray-400 cursor-pointer select-none">Advanced Options</summary>
+                            <div class="space-y-4 pt-3 text-sm">
+                                <!-- Cost Sensitivity -->
+                                <div>
+                                    <label class="text-xs text-gray-400">Cost Sensitivity (Multiplier)</label>
+                                    <div class="flex gap-3 mt-1">
+                                        <label><input type="radio" name="cost_multiplier" value="1.0" checked> 1×</label>
+                                        <label><input type="radio" name="cost_multiplier" value="2.0"> 2×</label>
+                                        <label><input type="radio" name="cost_multiplier" value="3.0"> 3×</label>
+                                    </div>
+                                </div>
+
+                                <!-- Max Trades & Vol Filter (moved here to reduce clutter) -->
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="text-xs text-gray-400">Max Trades / Day</label>
+                                        <select name="max_trades" id="max_trades" class="mt-1 w-full bg-[#0a0c12] border border-gray-700 p-2.5 rounded-2xl text-sm">
+                                            <option value="2">2</option>
+                                            <option value="3" selected>3</option>
+                                            <option value="4">4</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="text-xs text-gray-400">Vol Filter Strictness</label>
+                                        <select name="vol_strict" id="vol_strict" class="mt-1 w-full bg-[#0a0c12] border border-gray-700 p-2.5 rounded-2xl text-sm">
+                                            <option value="0.45">Loose</option>
+                                            <option value="0.55" selected>Normal</option>
+                                            <option value="0.65">Strict</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
+
+                        <!-- The main "Backtest Button" — now impossible to miss, finance-grade primary action -->
+                        <button type="submit"
+                                class="w-full mt-3 py-4 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 transition-all rounded-3xl font-bold text-xl tracking-tight flex items-center justify-center gap-3 shadow-xl shadow-emerald-900/40 ring-1 ring-emerald-400/30">
+                            <i class="fa-solid fa-play"></i>
+                            <span>RUN FULL VALIDATION + DOCUMENT LEARNINGS</span>
+                        </button>
+
+                        <!-- Stop / Cancel button - only visible while a job is running -->
+                        <button type="button" id="cancel-btn"
+                                class="w-full mt-2 py-2.5 bg-red-600/90 hover:bg-red-600 text-white rounded-3xl font-semibold text-sm hidden transition-all flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-stop"></i>
+                            <span>STOP / CANCEL RUNNING JOB</span>
+                        </button>
+
+                        <!-- Quick fallback when Kite creds are not ready (synthetic but still runs the full learning pipeline) -->
+                        <button type="button" onclick="runQuickSyntheticValidation()"
+                                class="w-full py-2.5 mt-2 text-sm bg-[#1f2937] hover:bg-gray-700 border border-gray-700 rounded-3xl font-medium flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-bolt"></i>
+                            <span>Quick Synthetic Validation (no Kite needed — still learns)</span>
+                        </button>
+                        <div class="text-center text-[10px] text-gray-500 mt-1">Real Kite data is strongly recommended for serious regime documentation.</div>
+                    </form>
+
+                    <div class="mt-3 text-[10px] text-gray-500">All runs automatically document regime notes in the Learning layer using robust rules (sample size, confidence, positive expectancy only).</div>
+                </div>
+
+                <!-- Live Progress + Status -->
+                <div class="xl:col-span-7 panel rounded-3xl p-6 flex flex-col">
+                    <div class="flex justify-between items-center mb-3">
+                        <h2 class="font-semibold text-lg">Progress &amp; Status</h2>
+                        <div id="status-pill" class="text-xs px-3 py-1 rounded-full bg-gray-800 font-mono">READY</div>
+                    </div>
+
+                    <!-- Progress Bar -->
+                    <div class="w-full bg-[#0a0c12] rounded-full h-3 mb-2 border border-gray-800 overflow-hidden">
+                        <div id="progress-bar" class="h-3 bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all" style="width: 0%"></div>
+                    </div>
+                    <div id="progress-text" class="text-xs text-gray-400 font-mono mb-4">Idle — click Run to start a learning cycle</div>
+
+                    <div id="error-code-box" class="hidden mb-3 px-3 py-2 bg-red-900/30 border border-red-800 text-red-400 text-xs rounded-2xl font-mono"></div>
+
+                    <div id="results-area" class="flex-1 text-sm text-gray-300 overflow-auto min-h-[180px] bg-[#0a0c12] p-4 rounded-2xl border border-gray-800">
+                        <div class="text-gray-500">Results and per-fold regime breakdown will appear here after a successful run. Switch to the Learnings tab to see the auto-generated documentation.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== TAB: RESULTS & CHARTS ========== -->
+        <div id="tab-results" class="tab-content hidden">
+            <div class="panel rounded-3xl p-6">
+                <h2 class="font-semibold mb-4 text-lg">Latest Run — Detailed Results</h2>
+                <div id="results-detailed"></div>
+                <div class="mt-4 flex gap-2">
+                    <button onclick="exportCurrentResult()" class="text-xs px-4 py-2 bg-[#111318] border border-gray-700 rounded-2xl">Export JSON</button>
+                    <button onclick="switchTab('learnings')" class="text-xs px-4 py-2 bg-emerald-900/30 border border-emerald-700 rounded-2xl">View Auto-Documented Learnings →</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== TAB: MARKET LEARNINGS & DOCS (the core new capability) ========== -->
+        <div id="tab-learnings" class="tab-content hidden">
+            <div class="panel rounded-3xl p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <div>
+                        <h2 class="font-semibold text-lg">Repetitive Market Learning — Auto-Generated Documentation</h2>
+                        <p class="text-xs text-gray-400">Every validation run adds structured notes. Only high-confidence statements (≥25 trades / 4+ runs) are emphasized.</p>
+                    </div>
+                    <button onclick="loadLearnings(true)" class="text-xs px-4 py-2 bg-[#111318] hover:bg-emerald-900/40 border border-gray-700 rounded-2xl">Refresh Learnings</button>
+                </div>
+
+                <div id="learnings-content" class="space-y-4 text-sm">
+                    <div class="panel p-6 rounded-3xl text-center text-gray-400">
+                        Run several validations with different date ranges or parameter presets.<br>
+                        The system will automatically generate honest, data-driven regime documentation.
+                    </div>
+                </div>
+
+                <div class="mt-5 pt-4 border-t border-gray-800 text-[10px] text-gray-500">
+                    Notes are generated by deterministic rules in backtest_memory.py (no LLM). They are falsifiable and data-volume aware.
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== TAB: REAL FILLS & TAXES (full Kite API usage) ========== -->
+        <div id="tab-fills" class="tab-content hidden">
+            <div class="panel rounded-3xl p-6">
+                <h2 class="font-semibold text-lg mb-1">Real Fills, Brokerage &amp; Tax Calibration</h2>
+                <p class="text-xs text-gray-400 mb-4">Uses Kite <code>/trades</code> + <code>/orders</code> + our cost model to compare reality vs backtest assumptions. Generates learning notes for cost model refinement.</p>
+
+                <button onclick="runRealFillsAnalysis()" 
+                        class="px-6 py-3 bg-amber-600 hover:bg-amber-500 rounded-2xl font-medium text-sm">PULL LAST FILLS FROM KITE &amp; ANALYZE</button>
+
+                <div id="fills-results" class="mt-5 text-sm"></div>
+            </div>
+        </div>
+
+        <!-- ========== TAB: PRESETS & DATA ========== -->
+        <div id="tab-presets" class="tab-content hidden">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div class="panel rounded-3xl p-6">
+                    <h3 class="font-medium mb-3">Saved Parameter Presets (local)</h3>
+                    <div id="preset-list" class="text-sm text-gray-300 space-y-1"></div>
+                    <div class="mt-3 flex gap-2">
+                        <button onclick="saveCurrentAsPreset()" class="text-xs px-3 py-1.5 bg-[#111318] border border-gray-700 rounded-2xl">Save Current Form as Preset</button>
+                    </div>
+                </div>
+                <div class="panel rounded-3xl p-6">
+                    <h3 class="font-medium mb-3">Historical Data (Kite)</h3>
+                    <div class="flex flex-wrap gap-2">
+                        <button onclick="triggerDataFetch()" 
+                                class="text-xs px-4 py-2 bg-[#111318] border border-gray-700 rounded-2xl hover:bg-gray-700">
+                            Fetch via Kite (smart cache)
+                        </button>
+                        <button onclick="triggerLocalCacheLoad()" 
+                                class="text-xs px-4 py-2 bg-emerald-900/30 border border-emerald-700 rounded-2xl hover:bg-emerald-900/50 text-emerald-300">
+                            ⚡ Load from Local Cache (Fastest)
+                        </button>
+                        <button onclick="triggerDataFetch(true)" 
+                                class="text-xs px-4 py-2 bg-red-900/30 border border-red-700 rounded-2xl hover:bg-red-900/50 text-red-300">
+                            Force Refresh from Kite
+                        </button>
+                    </div>
+                    <div class="mt-2 text-[10px] text-gray-500">
+                        Use "Load from Local Cache" when data already exists in <code>data/historical_cache</code>. Zero delay, zero API calls.
+                    </div>
+
+                    <!-- Data Fetch Progress Bar -->
+                    <div id="data-progress-container" class="hidden mt-3">
+                        <div class="text-[10px] text-gray-400 mb-1">Downloading multi-contract data...</div>
+                        <div class="w-full bg-[#0a0c12] rounded-full h-2 border border-gray-800">
+                            <div id="data-progress-bar" class="h-2 bg-emerald-500 rounded-full transition-all" style="width: 0%"></div>
+                        </div>
+                        <div id="data-progress-text" class="text-[10px] text-gray-400 mt-1"></div>
+                    </div>
+                </div>
+
+                <!-- NEW: Available Cached Datasets panel (small, informative, Bloomberg-grade) -->
+                <div class="panel rounded-3xl p-5 md:col-span-2">
+                    <div class="flex items-center justify-between mb-2">
+                        <div>
+                            <span class="font-medium text-sm">Available Cached Datasets</span>
+                            <span class="text-[10px] text-gray-500 ml-1">(auto-preferred by backtests)</span>
+                        </div>
+                        <button onclick="refreshCachedDatasets()" 
+                                class="text-[10px] px-2 py-0.5 bg-[#0a0c12] border border-gray-700 hover:border-emerald-600 rounded-xl transition">↻ Refresh List</button>
+                    </div>
+                    <div class="mb-2 text-[10px] bg-[#0a0c12] border border-emerald-900/40 rounded-xl px-3 py-1 text-emerald-300">
+                        <strong>Recommended flow:</strong> Click ⚡ Load from Local Cache → check Quick Mode (auto-enables Research + Next Bar) → Run Validation. 
+                        This exercises the full efficient pipeline (instant cache + MC with gpu_used + cost sensitivity) in &lt;1 min.
+                    </div>
+                    <div id="cached-datasets-list" class="text-xs max-h-[110px] overflow-auto space-y-1 pr-1">
+                        <!-- Populated by JS from /api/data/cached_datasets -->
+                    </div>
+                    <div class="mt-1.5 text-[10px] text-gray-500">
+                        Backtests with "Use real data" automatically detect &amp; prefer the best local overlap (no checkbox). 
+                        Only use <span class="text-red-300">Force Refresh</span> when you explicitly want to ignore cache and hit Kite.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="hidden fixed bottom-6 right-6 bg-[#111318] border border-gray-700 px-4 py-2 rounded-2xl text-sm shadow-xl"></div>
+
+    <script>
+        // Tailwind script run
+        function initTailwind() {
+            const style = document.createElement('style');
+            style.textContent = `
+                .panel { background:#111318; border:1px solid #1f2937; }
+                .tab-btn { 
+            transition: all .1s ease; 
+            border-bottom: 2px solid transparent;
+        }
+        .tab-btn.active { 
+            background: #11141F; 
+            border-color: #252B3A; 
+            color: #E5E7EB; 
+            border-bottom-color: #22C55E;
+        }
+                .metric { font-variant-numeric: tabular-nums; }
+                .insight-card { background:#0a0c12; border:1px solid #1f2937; }
+                .regime-low { color:#67e8f9; }
+                .regime-normal { color:#a3e635; }
+                .regime-high { color:#f59e0b; }
+            `;
+            document.head.appendChild(style);
+        }
+        initTailwind();
+
+        let currentJobId = null;
+        let currentResult = null;
+        let charts = {};
+
+        function showToast(msg, isError = false) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = `fixed bottom-6 right-6 px-4 py-2 rounded-2xl text-sm shadow-xl border ${isError ? 'bg-red-900/60 border-red-700 text-red-300' : 'bg-[#111318] border-gray-700'}`;
+            t.classList.remove('hidden');
+            setTimeout(() => t.classList.add('hidden'), 3200);
+        }
+
+        function switchTab(name) {
+            try {
+                document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+                const target = document.getElementById('tab-' + name);
+                if (target) target.classList.remove('hidden');
+
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                const btn = document.getElementById('tab-btn-' + name);
+                if (btn) btn.classList.add('active');
+
+                if (name === 'learnings') loadLearnings();
+                if (name === 'presets') {
+                    renderPresets();
+                    // Auto-populate the cached datasets panel when visiting the tab (fresh view of local data)
+                    setTimeout(refreshCachedDatasets, 50);
+                }
+            } catch (e) {
+                console.error("Tab switch failed:", e);
+            }
+        }
+
+        // ===== PRESETS =====
+        const PRESETS = {
+            conservative: { months: 6, folds: 5, risk_low: 0.0028, risk_high: 0.0032, max_trades: 2, vol_strict: 0.60, research_mode: false, cost_multiplier: 1.0, use_real_data: true },
+            balanced: { months: 5, folds: 5, risk_low: 0.0032, risk_high: 0.0038, max_trades: 3, vol_strict: 0.55, research_mode: false, cost_multiplier: 1.0, use_real_data: true },
+            aggressive: { months: 4, folds: 4, risk_low: 0.0045, risk_high: 0.0055, max_trades: 4, vol_strict: 0.45, research_mode: false, cost_multiplier: 1.0, use_real_data: true },
+            "research (relaxed)": { months: 5, folds: 5, risk_low: 0.003, risk_high: 0.005, max_trades: 5, vol_strict: 0.40, research_mode: true, cost_multiplier: 1.0, use_real_data: false },
+            "cost stress test": { months: 5, folds: 5, risk_low: 0.0035, risk_high: 0.0045, max_trades: 3, vol_strict: 0.50, research_mode: false, cost_multiplier: 2.5, use_real_data: false },
+            // Matches the current live/paper trading configuration as closely as possible
+            live: { months: 5, folds: 5, risk_low: 0.003, risk_high: 0.004, max_trades: 3, vol_strict: 0.55, research_mode: false, cost_multiplier: 1.0, use_real_data: false }
+        };
+
+        function loadPreset(key) {
+            const p = PRESETS[key];
+            if (!p) return;
+            document.getElementById('months').value = p.months;
+            document.getElementById('folds').value = p.folds;
+            document.getElementById('risk_low').value = p.risk_low;
+            document.getElementById('risk_high').value = p.risk_high;
+            if (document.getElementById('max_trades')) document.getElementById('max_trades').value = p.max_trades || 3;
+            if (document.getElementById('vol_strict')) document.getElementById('vol_strict').value = p.vol_strict || 0.55;
+            if (document.getElementById('research_mode')) document.getElementById('research_mode').checked = !!p.research_mode;
+            document.getElementById('use_real_data').checked = p.use_real_data;
+
+            // Set cost multiplier radio if present
+            const cm = p.cost_multiplier || 1.0;
+            const radio = form.querySelector(`input[name="cost_multiplier"][value="${cm}"]`);
+            if (radio) radio.checked = true;
+
+            // Trigger UI side effects for Research Mode (indicator + disable real data)
+            handleResearchModeToggle();
+            showToast(`Preset "${key}" loaded`);
+        }
+
+        function saveCurrentAsPreset() {
+            const name = prompt("Preset name (e.g. 'my-oct-2026'):");
+            if (!name) return;
+            const data = {
+                months: parseFloat(document.getElementById('months').value),
+                folds: parseFloat(document.getElementById('folds').value),
+                risk_low: parseFloat(document.getElementById('risk_low').value),
+                risk_high: parseFloat(document.getElementById('risk_high').value),
+                max_trades: parseInt(document.getElementById('max_trades')?.value || 3),
+                vol_strict: parseFloat(document.getElementById('vol_strict')?.value || 0.55),
+                research_mode: document.getElementById('research_mode')?.checked || false,
+                cost_multiplier: parseFloat(document.querySelector('input[name="cost_multiplier"]:checked')?.value || 1.0),
+                use_real_data: document.getElementById('use_real_data').checked,
+                force_refresh: document.getElementById('force_refresh')?.checked || false
+            };
+            localStorage.setItem('preset_' + name, JSON.stringify(data));
+            showToast('Preset saved locally');
+            renderPresets();
+        }
+
+        function renderPresets() {
+            const container = document.getElementById('preset-list');
+            container.innerHTML = '';
+            const keys = Object.keys(localStorage).filter(k => k.startsWith('preset_'));
+            if (keys.length === 0) {
+                container.innerHTML = '<div class="text-gray-500 text-xs">No user presets yet. Use the form then "Save Current as Preset".</div>';
+                return;
+            }
+            keys.forEach(k => {
+                const name = k.replace('preset_', '');
+                const btn = document.createElement('button');
+                btn.className = 'block w-full text-left text-xs px-3 py-1.5 hover:bg-[#1f2937] rounded border border-gray-800 mb-1';
+                btn.textContent = name;
+                btn.onclick = () => {
+                    const data = JSON.parse(localStorage.getItem(k));
+                    document.getElementById('months').value = data.months || 5;
+                    document.getElementById('folds').value = data.folds || 5;
+                    document.getElementById('risk_low').value = data.risk_low || 0.003;
+                    document.getElementById('risk_high').value = data.risk_high || 0.004;
+                    if (document.getElementById('max_trades')) document.getElementById('max_trades').value = data.max_trades || 3;
+                    if (document.getElementById('vol_strict')) document.getElementById('vol_strict').value = data.vol_strict || 0.55;
+                    if (document.getElementById('research_mode')) document.getElementById('research_mode').checked = !!data.research_mode;
+                    document.getElementById('use_real_data').checked = data.use_real_data !== false;
+                    if (document.getElementById('force_refresh')) document.getElementById('force_refresh').checked = !!data.force_refresh;
+
+                    // Set cost multiplier radio
+                    const cm = data.cost_multiplier || 1.0;
+                    const radio = document.querySelector(`input[name="cost_multiplier"][value="${cm}"]`);
+                    if (radio) radio.checked = true;
+
+                    // Trigger UI side effects for Research Mode
+                    handleResearchModeToggle();
+                    switchTab('run');
+                    showToast('Preset loaded into Run tab');
+                };
+                container.appendChild(btn);
+            });
+        }
+
+        // ===== BACKTEST RUN + PROGRESS (super smooth) =====
+        const form = document.getElementById('backtest-form');
+        const resultsArea = document.getElementById('results-area');
+        const statusPill = document.getElementById('status-pill');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const errorBox = document.getElementById('error-code-box');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            // Prevent multiple rapid submissions (common cause of log floods)
+            const submitBtn = form.querySelector('button[type="submit"]');
+            if (submitBtn) submitBtn.disabled = true;
+
+            errorBox.classList.add('hidden');
+            statusPill.textContent = 'QUEUED';
+            statusPill.className = 'text-xs px-3 py-1 rounded-full bg-amber-900 text-amber-300 font-mono';
+            progressBar.style.width = '5%';
+            progressText.textContent = 'Submitting job to background runner...';
+            resultsArea.innerHTML = '<div class="text-emerald-400">Validation job started. Watching progress with live stage updates...</div>';
+
+            const fd = new FormData(form);
+            const res = await fetch('/api/backtest/run', { method: 'POST', body: fd });
+            const data = await res.json();
+            currentJobId = data.job_id;
+
+            if (!currentJobId) {
+                statusPill.textContent = 'ERROR';
+                statusPill.className = 'text-xs px-3 py-1 rounded-full bg-red-900 text-red-300';
+                resultsArea.innerHTML = `<pre class="text-red-400 text-xs">${JSON.stringify(data)}</pre>`;
+                if (submitBtn) submitBtn.disabled = false;
+                return;
+            }
+
+            // Show cancel button
+            const cancelBtn = document.getElementById('cancel-btn');
+            if (cancelBtn) {
+                cancelBtn.classList.remove('hidden');
+                cancelBtn.onclick = async () => {
+                    if (!currentJobId) return;
+                    cancelBtn.disabled = true;
+                    cancelBtn.textContent = 'Cancelling...';
+                    try {
+                        await fetch(`/api/backtest/cancel/${currentJobId}`, { method: 'POST' });
+                        showToast('Cancellation requested. Job will stop at next safe point.');
+                    } catch (e) {
+                        showToast('Failed to send cancel request', true);
+                    }
+                };
+            }
+
+            pollJob(currentJobId);
+        });
+
+        async function pollJob(jobId) {
+            const poll = setInterval(async () => {
+                try {
+                    const r = await fetch(`/api/backtest/result/${jobId}`);
+                    const job = await r.json();
+
+                    if (job.progress !== undefined) {
+                        progressBar.style.width = job.progress + '%';
+                        const stage = job.stage || 'running';
+                        progressText.textContent = `${stage} — ${job.progress}%`;
+                        let pillClass = 'bg-amber-900 text-amber-300';
+                        if (stage === 'cancelling' || job.status === 'cancelled') {
+                            pillClass = 'bg-gray-700 text-gray-300';
+                        }
+                        statusPill.textContent = `${stage.toUpperCase()} ${job.progress}%`;
+                        statusPill.className = `text-xs px-3 py-1 rounded-full ${pillClass} font-mono`;
+                    }
+
+                    // Dedicated data download progress bar
+                    if (job.type === 'data_fetch') {
+                        const container = document.getElementById('data-progress-container');
+                        const bar = document.getElementById('data-progress-bar');
+                        const text = document.getElementById('data-progress-text');
+                        if (container) container.classList.remove('hidden');
+                        if (bar && job.progress !== undefined) bar.style.width = (job.progress || 0) + '%';
+                        if (text) text.textContent = `${job.stage || 'fetching'} — ${job.progress || 0}%`;
+                    }
+
+                    if (job.error_code) {
+                        errorBox.classList.remove('hidden');
+                        errorBox.textContent = `ERROR CODE: ${job.error_code} — ${job.error || ''}`;
+                    }
+
+                    if (job.status === 'completed') {
+                        clearInterval(poll);
+                        const cancelBtn = document.getElementById('cancel-btn');
+                        if (cancelBtn) cancelBtn.classList.add('hidden');
+                        progressBar.style.width = '100%';
+                        statusPill.textContent = 'COMPLETED';
+                        statusPill.className = 'text-xs px-3 py-1 rounded-full bg-emerald-900 text-emerald-300 font-mono';
+                        progressText.textContent = 'Validation finished — rich regime documentation generated';
+                        currentResult = job.result || job;
+                        renderDetailedResults(currentResult);
+                        showToast('Run complete. Switch to Learnings tab to read the generated notes.');
+                        setTimeout(() => switchTab('learnings'), 800);
+                        if (submitBtn) submitBtn.disabled = false;
+                    } else if (job.status === 'failed') {
+                        clearInterval(poll);
+                        const cancelBtn = document.getElementById('cancel-btn');
+                        if (cancelBtn) cancelBtn.classList.add('hidden');
+                        statusPill.textContent = 'FAILED';
+                        statusPill.className = 'text-xs px-3 py-1 rounded-full bg-red-900 text-red-300 font-mono';
+                        progressText.textContent = job.error || 'Failed';
+                        resultsArea.innerHTML = `<pre class="text-red-400 text-xs">${job.error || 'Unknown error'}\n\nCode: ${job.error_code || ''}</pre>`;
+                        if (submitBtn) submitBtn.disabled = false;
+                    } else if (job.status === 'cancelled') {
+                        clearInterval(poll);
+                        const cancelBtn = document.getElementById('cancel-btn');
+                        if (cancelBtn) cancelBtn.classList.add('hidden');
+                        statusPill.textContent = 'CANCELLED';
+                        statusPill.className = 'text-xs px-3 py-1 rounded-full bg-gray-700 text-gray-300 font-mono';
+                        progressText.textContent = 'Job was cancelled by user';
+                        resultsArea.innerHTML = `<div class="text-amber-400 text-sm">Backtest job was cancelled. You can start a new one.</div>`;
+                        if (submitBtn) submitBtn.disabled = false;
+                        showToast('Job cancelled successfully.');
+                    }
+                } catch (err) {
+                    // transient network
+                }
+            }, 2200);
+        }
+
+        function renderDetailedResults(result) {
+            if (!result) return;
+
+            const avgRet = (result.avg_return || 0);
+            const avgPf = (result.avg_pf || 0);
+            const retColor = avgRet >= 0 ? 'pnl-positive' : 'pnl-negative';
+            const pfColor = avgPf >= 1.0 ? 'pnl-positive' : 'pnl-negative';
+
+            const wasResearchMode = result.params?.research_mode === true;
+
+            let html = `
+                ${wasResearchMode ? `
+                    <div class="mb-3 px-3 py-1.5 text-xs rounded-2xl bg-amber-900/40 border border-amber-700 text-amber-300 flex items-center gap-2">
+                        <span class="font-medium">Research Mode was enabled</span>
+                        <span class="text-amber-400/70">— Filters were relaxed for exploration</span>
+                    </div>
+                ` : ''}
+
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                    <div class="panel p-4 rounded-3xl">
+                        <div class="section-header mb-1">Avg Return</div>
+                        <div class="text-4xl font-semibold tabular-nums tracking-tighter ${retColor}">
+                            ${avgRet.toFixed(2)}%
+                        </div>
+                    </div>
+                    <div class="panel p-4 rounded-3xl">
+                        <div class="section-header mb-1">Avg Profit Factor</div>
+                        <div class="text-4xl font-semibold tabular-nums tracking-tighter ${pfColor}">
+                            ${avgPf.toFixed(2)}
+                        </div>
+                    </div>
+                    <div class="panel p-4 rounded-3xl">
+                        <div class="section-header mb-1">Folds Completed</div>
+                        <div class="text-4xl font-semibold tabular-nums tracking-tighter">
+                            ${result.folds?.length || result.total_folds_run || 0}
+                        </div>
+                    </div>
+                    <div class="panel p-4 rounded-3xl">
+                        <div class="section-header mb-1">Total Trades</div>
+                        <div class="text-4xl font-semibold tabular-nums tracking-tighter">
+                            ${result.total_trades || 0}
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            if (result.learning_notes && result.learning_notes.length) {
+                html += `<div class="mb-4"><div class="text-xs text-emerald-400 mb-1">AUTO-GENERATED NOTES FROM THIS RUN</div>`;
+                result.learning_notes.slice(0, 4).forEach(n => {
+                    html += `<div class="insight-card p-2 rounded-2xl mb-1 text-xs">${n}</div>`;
+                });
+                html += `</div>`;
+            }
+
+            // === HARD STATISTICAL POWER WARNING (Final Polish) ===
+            const totalTrades = result.total_trades || 0;
+            let powerWarningHtml = '';
+
+            if (totalTrades < 20) {
+                powerWarningHtml = `
+                    <div class="mb-5 p-4 rounded-3xl bg-red-900/30 border-2 border-red-700 text-red-300">
+                        <div class="flex items-start gap-3">
+                            <div class="text-2xl mt-0.5">🚨</div>
+                            <div class="flex-1">
+                                <div class="font-bold text-base mb-1">CRITICAL: STATISTICAL POWER WARNING</div>
+                                <div class="text-sm leading-snug">
+                                    Only <strong>${totalTrades} trades</strong> across all folds. 
+                                    This is far below the minimum required for reliable Walk-Forward Analysis conclusions.
+                                </div>
+                                <div class="mt-2 text-xs text-red-400">
+                                    <strong>Recommendation:</strong> Enable Research Mode + increase Max Trades per Day. 
+                                    Use a longer data window or Quick Mode first to explore parameters that generate more trades.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else if (totalTrades < 40) {
+                powerWarningHtml = `
+                    <div class="mb-5 p-4 rounded-3xl bg-amber-900/30 border-2 border-amber-700 text-amber-300">
+                        <div class="flex items-start gap-3">
+                            <div class="text-2xl mt-0.5">⚠️</div>
+                            <div class="flex-1">
+                                <div class="font-bold text-base mb-1">STATISTICAL POWER WARNING — LOW CONFIDENCE</div>
+                                <div class="text-sm leading-snug">
+                                    Only <strong>${totalTrades} trades</strong> across all folds. 
+                                    Results have limited statistical validity. High risk of overfitting or random luck.
+                                </div>
+                                <div class="mt-2 text-xs text-amber-400">
+                                    Consider running with Research Mode enabled and/or more folds + longer history before making parameter decisions.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else if (totalTrades < 60) {
+                powerWarningHtml = `
+                    <div class="mb-5 p-4 rounded-3xl bg-yellow-900/20 border border-yellow-700 text-yellow-300 text-sm">
+                        <strong>Caution:</strong> Moderate sample size (${totalTrades} trades). 
+                        Results are usable for direction but still carry meaningful uncertainty.
+                    </div>
+                `;
+            }
+
+            if (powerWarningHtml) {
+                html += powerWarningHtml;
+            }
+
+            // Cost Sensitivity Summary (professional feature)
+            if (result.cost_sensitivity_summary) {
+                html += `<div class="mb-4">
+                    <div class="section-header mb-2">Cost Sensitivity Summary (on final selected params)</div>
+                    <div class="grid grid-cols-3 gap-3 text-sm">`;
+                for (let [mult, pnl] of Object.entries(result.cost_sensitivity_summary)) {
+                    const color = pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+                    html += `<div class="panel p-3 rounded-2xl text-center">
+                        <div class="text-xs text-gray-400">${mult} Costs</div>
+                        <div class="text-xl font-semibold tabular-nums ${color}">${pnl.toLocaleString()}</div>
+                    </div>`;
+                }
+                html += `</div></div>`;
+            }
+
+            // Monte Carlo (A) + Parameter Stability (quick view) + nicer viz
+            if (result.monte_carlo && !result.monte_carlo.message) {
+                const mc = result.monte_carlo;
+                html += `<div class="mb-4 panel p-4 rounded-3xl">
+                    <div class="section-header mb-2 flex justify-between">
+                        <span>Monte Carlo Robustness (${mc.n_simulations} sims) ${mc.gpu_used ? '<span class="text-emerald-400">(GPU)</span>' : ''}</span>
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mb-3">
+                        <div>Mean Final Return: <span class="font-mono">${mc.final_return_mean}%</span></div>
+                        <div>5th %ile (pessimistic): <span class="font-mono text-red-400">${mc.final_return_5th_percentile}%</span></div>
+                        <div>95th %ile (optimistic): <span class="font-mono text-emerald-400">${mc.final_return_95th_percentile}%</span></div>
+                        <div>Avg Max DD: <span class="font-mono">${mc.max_dd_mean}%</span></div>
+                    </div>
+                    <div class="text-[10px] text-gray-400">GPU acceleration used when available (PyTorch CUDA).</div>
+                </div>`;
+            }
+
+            // Export buttons for full report (cost sensitivity + MC)
+            // Aggressive Statistical Power protection: block exports on critical low sample
+            const sp = result.statistical_power || {};
+            const isCritical = sp.warning_level === 'critical';
+
+            if (isCritical) {
+                html += `
+                    <div class="mb-4 p-3 rounded-2xl bg-red-900/20 border border-red-800 text-red-400 text-xs">
+                        <strong>Exports Disabled</strong> — Critical statistical power warning active (${sp.total_trades || 0} trades). 
+                        Complete a run with higher trade count before exporting professional reports.
+                    </div>
+                    <div class="flex gap-2 mb-4 opacity-50 pointer-events-none">
+                        <button class="text-xs px-3 py-1.5 bg-[#1f2937] border border-gray-700 rounded-2xl">Export Full Report (JSON)</button>
+                        <button class="text-xs px-3 py-1.5 bg-[#1f2937] border border-gray-700 rounded-2xl">Export CSV</button>
+                    </div>
+                `;
+            } else {
+                html += `<div class="flex gap-2 mb-4">
+                    <button onclick="exportFullReport()" class="text-xs px-3 py-1.5 bg-[#1f2937] border border-gray-700 rounded-2xl hover:bg-gray-700">Export Full Report (JSON)</button>
+                    <button onclick="exportFullReportCSV()" class="text-xs px-3 py-1.5 bg-[#1f2937] border border-gray-700 rounded-2xl hover:bg-gray-700">Export CSV</button>
+                </div>`;
+            }
+
+            if (result.folds && result.folds.length) {
+                html += `<div class="section-header mb-3">Per-Fold Performance</div>`;
+                html += `<div class="space-y-3">`;
+
+                result.folds.forEach(f => {
+                    const foldRet = f.test_return || 0;
+                    const foldColor = foldRet >= 0 ? 'pnl-positive' : 'pnl-negative';
+                    const pf = f.test_pf || 0;
+                    const pfClass = pf >= 1 ? 'pnl-positive' : 'pnl-negative';
+
+                    html += `
+                        <div class="panel p-4 rounded-3xl">
+                            <div class="flex justify-between items-baseline mb-3">
+                                <div>
+                                    <span class="font-semibold">Fold ${f.fold}</span>
+                                    <span class="ml-2 text-xs px-2 py-0.5 rounded bg-[#1F2433]">${f.trades || 0} trades</span>
+                                </div>
+                                <div class="text-right">
+                                    <span class="text-2xl font-semibold tabular-nums ${foldColor}">${foldRet.toFixed(2)}%</span>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-3 gap-4 text-sm">
+                                <div>
+                                    <div class="text-[10px] text-gray-400">Profit Factor</div>
+                                    <div class="font-mono text-lg ${pfClass}">${pf.toFixed(2)}</div>
+                                </div>
+                                <div>
+                                    <div class="text-[10px] text-gray-400">Max DD</div>
+                                    <div class="font-mono text-lg">${(f.test_dd || 0).toFixed(1)}%</div>
+                                </div>
+                                <div>
+                                    <div class="text-[10px] text-gray-400">Best Params</div>
+                                    <div class="text-[10px] text-gray-300 font-mono truncate">${JSON.stringify(f.best_params || {}).slice(0,60)}</div>
+                                </div>
+                            </div>
+                    `;
+
+                    if (f.regime_performance && Object.keys(f.regime_performance).length > 0) {
+                        html += `<div class="mt-3 pt-3 border-t border-[#252B3A]">
+                            <div class="text-[10px] text-gray-400 mb-2">Regime Breakdown</div>
+                            <div class="flex flex-wrap gap-2">`;
+                        
+                        Object.entries(f.regime_performance).forEach(([reg, p]) => {
+                            const regColor = reg === 'high' ? 'text-amber-400' : (reg === 'low' ? 'text-cyan-400' : 'text-emerald-400');
+                            html += `
+                                <div class="text-xs bg-[#0F111A] px-3 py-1 rounded-2xl border border-[#252B3A]">
+                                    <span class="${regColor} font-medium">${reg}</span>: 
+                                    ${p.trades}t • ${p.total_pnl?.toFixed(0)} • WR ${p.win_rate || 0}%
+                                </div>
+                            `;
+                        });
+                        html += `</div></div>`;
+                    }
+                    html += `</div>`;
+                });
+
+                html += `</div>`;
+            }
+
+            resultsArea.innerHTML = html;
+            const detailed = document.getElementById('results-detailed');
+            if (detailed) detailed.innerHTML = html;
+        }
+
+        function exportCurrentResult() {
+            if (!currentResult) { showToast('No result to export', true); return; }
+            const blob = new Blob([JSON.stringify(currentResult, null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `backtest_run_${Date.now()}.json`;
+            a.click();
+        }
+
+        // ===== LEARNINGS (rich, uses the new robust memory) =====
+        async function loadLearnings(force = false) {
+            const container = document.getElementById('learnings-content');
+            container.innerHTML = '<div class="text-emerald-400 text-xs">Loading regime documentation...</div>';
+
+            try {
+                const res = await fetch('/api/memory/insights');
+                const data = await res.json();
+
+                if (data.message || !data.documentation_notes) {
+                    container.innerHTML = `<div class="text-gray-400">${data.message || 'No runs yet. Execute validations from the Run tab.'}</div>`;
+                    return;
+                }
+
+                let html = `<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">`;
+
+                // Regime statistics cards
+                if (data.regime_statistics) {
+                    html += `<div><div class="text-xs text-gray-400 mb-1">REGIME STATISTICS (across all recorded runs)</div>`;
+                    Object.entries(data.regime_statistics).forEach(([reg, s]) => {
+                        const confColor = s.confidence === 'high' ? 'emerald' : (s.confidence === 'medium' ? 'amber' : 'gray');
+                        html += `<div class="insight-card p-3 rounded-2xl mb-2">
+                            <div class="flex justify-between"><span class="font-medium regime-${reg}">${reg.toUpperCase()}</span><span class="text-[10px] px-1.5 py-0.5 bg-${confColor}-900 rounded">${s.confidence}</span></div>
+                            <div class="text-xs mt-1">${s.total_trades} trades • ${s.runs_observed} runs • PnL ${s.total_pnl}</div>
+                            ${s.avg_win_rate ? `<div class="text-xs text-gray-400">Avg win-rate ~${s.avg_win_rate}%</div>` : ''}
+                        </div>`;
+                    });
+                    html += `</div>`;
+                }
+
+                // Documentation notes (the star)
+                html += `<div><div class="text-xs text-gray-400 mb-1">AUTO-DOCUMENTED OBSERVATIONS</div>`;
+                (data.documentation_notes || []).forEach(note => {
+                    const cls = note.includes('Insufficient') || note.includes('Negative') ? 'border-red-900' : 'border-emerald-900';
+                    html += `<div class="insight-card border-l-4 ${cls} p-3 rounded-r-2xl mb-2 text-xs leading-snug">${note}</div>`;
+                });
+                html += `</div></div>`;
+
+                if (data.best_parameters_by_regime) {
+                    html += `<div class="mt-3"><div class="text-xs text-gray-400 mb-1">BEST PARAMS SEEN PER REGIME (sample-aware)</div><div class="text-xs grid grid-cols-1 md:grid-cols-3 gap-2">`;
+                    Object.entries(data.best_parameters_by_regime).forEach(([reg, info]) => {
+                        html += `<div class="bg-[#0a0c12] p-2 rounded">${reg}: <span class="font-mono text-emerald-400">${JSON.stringify(info.params || info)}</span><div class="text-[10px] text-gray-500">${info.trades || 0} trades</div></div>`;
+                    });
+                    html += `</div></div>`;
+                }
+
+                container.innerHTML = html;
+
+                // Surface current run's Statistical Power warning more visibly in Learnings tab
+                maybeInjectStatisticalPowerWarning(container);
+
+            } catch (e) {
+                container.innerHTML = `<div class="text-red-400 text-xs">Failed to load learnings: ${e}. Make sure you have run the backtest at least once.</div>`;
+            }
+        }
+
+        // ===== REAL FILLS & TAXES (Kite full usage) =====
+        async function runRealFillsAnalysis() {
+            const container = document.getElementById('fills-results');
+            container.innerHTML = '<div class="text-amber-400">Contacting Kite /trades + /orders and running cost calibration...</div>';
+
+            try {
+                const res = await fetch('/api/kite/real_fills_analysis?limit=40');
+                const data = await res.json();
+
+                if (data.error) {
+                    container.innerHTML = `<div class="text-red-400">Error ${data.error_code || ''}: ${data.error}</div>`;
+                    return;
+                }
+
+                let html = `<div class="mt-2 grid grid-cols-3 gap-3 text-xs mb-3">`;
+                html += `<div class="bg-[#0a0c12] p-2 rounded">Fills analyzed: <span class="font-semibold">${data.summary?.nifty_fills_analyzed || 0}</span></div>`;
+                html += `<div class="bg-[#0a0c12] p-2 rounded">Est. costs (model): ₹${data.summary?.est_total_cost_rs || 0}</div>`;
+                html += `<div class="bg-[#0a0c12] p-2 rounded">Orders seen: ${data.recent_orders_count || '?'}</div>`;
+                html += `</div>`;
+
+                if (data.documentation_notes) {
+                    html += `<div class="text-xs text-amber-400 mb-1">COST &amp; TIMING LEARNING NOTES</div>`;
+                    data.documentation_notes.forEach(n => {
+                        html += `<div class="insight-card p-2 text-xs mb-1">${n}</div>`;
+                    });
+                }
+
+                if (data.fills && data.fills.length) {
+                    html += `<div class="mt-3 text-xs"><div class="text-gray-400 mb-1">SAMPLE ANALYZED FILLS</div><div class="max-h-[210px] overflow-auto text-[10px] font-mono bg-[#0a0c12] p-2 rounded">`;
+                    data.fills.slice(0, 8).forEach(f => {
+                        html += `${f.ts?.slice(0,16) || ''} ${f.symbol} ${f.qty} @ ${f.price} → est ₹${f.est_cost_round_turn_rs}\n`;
+                    });
+                    html += `</div></div>`;
+                }
+
+                container.innerHTML = html;
+                showToast('Real fills analysis complete — notes added to your learning base');
+            } catch (e) {
+                container.innerHTML = `<div class="text-red-400">Analysis failed: ${e}</div>`;
+            }
+        }
+
+        async function triggerDataFetch(forceRefresh = false) {
+            const params = new URLSearchParams({ months: '4' });
+            if (forceRefresh) params.set('force_refresh', 'true');
+            showToast(forceRefresh ? 'Force refresh from Kite (ignoring cache)...' : 'Starting smart data load (prefers local cache)...');
+            try {
+                const res = await fetch('/api/data/fetch', { method: 'POST', body: params });
+                const j = await res.json();
+                showToast(forceRefresh ? 'Force data fetch started (fresh Kite pull).' : 'Data load job started. Will use local cache when possible.');
+            } catch (e) {
+                showToast('Data request failed', true);
+            }
+        }
+
+        async function triggerLocalCacheLoad() {
+            showToast('Loading from local cache only (fast path, no Kite call)...');
+            try {
+                const res = await fetch('/api/data/fetch', { 
+                    method: 'POST', 
+                    body: new URLSearchParams({ months: '6', use_local_only: 'true' }) 
+                });
+                const j = await res.json();
+                showToast('✅ Local cache ready — backtests will now be instant (no Kite).');
+
+                // Make the recommended flow even smoother: enable real data (will hit the fresh cache) and jump to Run tab
+                const useReal = document.getElementById('use_real_data');
+                if (useReal) useReal.checked = true;
+
+                // Refresh the datasets panel so user sees exactly what is now loaded
+                setTimeout(refreshCachedDatasets, 300);
+
+                // Gentle nudge toward the Quick Mode recommended validation
+                setTimeout(() => {
+                    showToast('Ready for Quick Mode validation (Research + Next Bar recommended for full MC/GPU/cost pipeline test)', false);
+                }, 1200);
+            } catch (e) {
+                showToast('Local cache load failed. No suitable data found in data/historical_cache.', true);
+            }
+        }
+
+        async function refreshCachedDatasets() {
+            const container = document.getElementById('cached-datasets-list');
+            if (!container) return;
+            container.innerHTML = '<div class="text-gray-500 px-1">Loading cached datasets...</div>';
+            try {
+                const r = await fetch('/api/data/cached_datasets');
+                const data = await r.json();
+                if (data.error) {
+                    container.innerHTML = `<div class="text-red-400 px-1">Error: ${data.error}</div>`;
+                    return;
+                }
+                const list = data.datasets || [];
+                if (list.length === 0) {
+                    container.innerHTML = '<div class="text-gray-500 px-1">No datasets in <code>data/historical_cache</code> yet.<br>Run a backtest with real data or use "Fetch via Kite".</div>';
+                    return;
+                }
+                container.innerHTML = '';
+                list.forEach(d => {
+                    const row = document.createElement('div');
+                    row.className = 'flex items-center justify-between bg-[#0a0c12] border border-gray-800 rounded-lg px-2 py-1 text-[10px]';
+                    const range = (d.actual_from && d.actual_to) ? `${d.actual_from}→${d.actual_to}` : `${d.file_from}→${d.file_to}`;
+                    const rowsTxt = (typeof d.rows === 'number') ? `${d.rows.toLocaleString()} rows` : `${d.rows} rows`;
+                    row.innerHTML = `
+                        <div class="font-mono text-emerald-400 truncate max-w-[55%]" title="${d.filename}">${d.filename}</div>
+                        <div class="text-right text-gray-400">
+                            <div>${range}</div>
+                            <div class="text-[9px] text-gray-500">${rowsTxt} • ${d.size_kb}KB • ${d.mtime || ''}</div>
+                        </div>
+                    `;
+                    container.appendChild(row);
+                });
+            } catch (e) {
+                container.innerHTML = '<div class="text-red-400 px-1">Failed to load dataset list (is server running?)</div>';
+            }
+        }
+
+        // Helper: Inject current run's Statistical Power warning into Learnings tab when critical
+        function maybeInjectStatisticalPowerWarning(container) {
+            if (!currentResult || !container) return;
+
+            const sp = currentResult.statistical_power;
+            if (!sp || sp.warning_level !== 'critical') return;
+
+            const banner = document.createElement('div');
+            banner.className = 'mb-4 p-4 rounded-3xl bg-red-900/30 border-2 border-red-700 text-red-300';
+            banner.innerHTML = `
+                <div class="flex items-start gap-3">
+                    <div class="text-2xl">🚨</div>
+                    <div class="flex-1">
+                        <div class="font-bold text-base mb-1">CRITICAL STATISTICAL POWER WARNING (from latest run)</div>
+                        <div class="text-sm">
+                            Only <strong>${sp.total_trades}</strong> trades. 
+                            ${sp.message || 'Results have extremely low statistical validity.'}
+                        </div>
+                        <div class="mt-2 text-xs text-red-400">
+                            ${sp.recommendation || 'Run with Research Mode + higher trade frequency settings before trusting any parameters.'}
+                        </div>
+                    </div>
+                </div>
+            `;
+            container.insertBefore(banner, container.firstChild);
+        }
+
+        // Export full professional report (Cost Sensitivity + Monte Carlo + all results)
+        function exportFullReport() {
+            if (!currentResult) {
+                alert("No results to export yet.");
+                return;
+            }
+            const totalTradesForExport = currentResult.total_trades || 0;
+            let warningLevel = 'ok';
+            let warningMessage = 'Sample size is reasonable for directional conclusions.';
+
+            if (totalTradesForExport < 20) {
+                warningLevel = 'critical';
+                warningMessage = 'CRITICAL: Far too few trades for any reliable conclusions. Results are statistically meaningless.';
+            } else if (totalTradesForExport < 40) {
+                warningLevel = 'strong';
+                warningMessage = 'STRONG WARNING: Low sample size. High risk of overfitting and false conclusions.';
+            } else if (totalTradesForExport < 60) {
+                warningLevel = 'caution';
+                warningMessage = 'Caution: Moderate sample size. Use results with appropriate skepticism.';
+            }
+
+            const report = {
+                timestamp: new Date().toISOString(),
+                params: currentResult.params || {},
+                summary: {
+                    avg_return: currentResult.avg_return,
+                    avg_pf: currentResult.avg_pf,
+                    total_trades: totalTradesForExport,
+                    total_folds: currentResult.total_folds_run || (currentResult.folds ? currentResult.folds.length : 0),
+                },
+                statistical_power: {
+                    total_trades: totalTradesForExport,
+                    warning_level: warningLevel,
+                    message: warningMessage,
+                    recommendation: warningLevel === 'critical' 
+                        ? "Strongly enable Research Mode, increase Max Trades per Day, and/or use longer real data windows before trusting any parameters."
+                        : (warningLevel === 'strong' 
+                            ? "Enable Research Mode and collect significantly more trades before making production decisions."
+                            : "Continue monitoring with larger samples over time.")
+                },
+                cost_sensitivity_summary: currentResult.cost_sensitivity_summary || currentResult.cost_sensitivity || {},
+                monte_carlo: currentResult.monte_carlo || currentResult.mc_stats || {},
+                gpu: {
+                    used: currentResult.gpu_used || false,
+                    device: currentResult.gpu_device || null,
+                    available: currentResult.gpu_available || null
+                },
+                research_mode_used: currentResult.research_mode_used || false,
+                folds: currentResult.folds || [],
+                learning_notes: currentResult.learning_notes || [],
+                regime_aggregate: currentResult.regime_aggregate || {},
+                _note: "Exported from NiftyFuturesAlgo Algo Lab. Statistical power warning is included for professional use."
+            };
+            const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = `nifty_wfa_report_${Date.now()}.json`;
+            a.click();
+        }
+
+        function exportFullReportCSV() {
+            if (!currentResult || !currentResult.folds) {
+                alert("No fold results to export.");
+                return;
+            }
+            let csv = "fold,return,pf,trades,research_mode,cost_mult\n";
+            currentResult.folds.forEach(f => {
+                csv += `${f.fold},${f.test_return},${f.test_pf},${f.trades},${currentResult.params?.research_mode || false},${currentResult.params?.cost_multiplier || 1.0}\n`;
+            });
+            const blob = new Blob([csv], { type: "text/csv" });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = `nifty_wfa_folds_${Date.now()}.csv`;
+            a.click();
+        }
+
+        // One-click synthetic path so users can always exercise the full "repetitive learning" system
+        function runQuickSyntheticValidation() {
+            const form = document.getElementById('backtest-form');
+            if (!form) return;
+            document.getElementById('use_real_data').checked = false;
+            document.getElementById('months').value = 3;
+            document.getElementById('folds').value = 4;
+            showToast('Configured for fast synthetic run. Submitting...');
+            // Trigger the real submit handler
+            form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        }
+
+        // Handle Research Mode toggle
+        function handleResearchModeToggle() {
+            const rm = document.getElementById('research_mode');
+            const realData = document.getElementById('use_real_data');
+            const indicator = document.getElementById('research-mode-indicator');
+
+            if (rm && rm.checked) {
+                // Safety: disable real data fetching in Research Mode
+                if (realData) {
+                    realData.checked = false;
+                    realData.disabled = true;
+                }
+                if (indicator) indicator.classList.remove('hidden');
+                showToast("Research Mode enabled — Real Kite data disabled for safety", false);
+            } else {
+                if (realData) realData.disabled = false;
+                if (indicator) indicator.classList.add('hidden');
+            }
+        }
+
+        // Also check on page load in case of preset restore
+        function initResearchModeUI() {
+            const rm = document.getElementById('research_mode');
+            if (rm) {
+                rm.addEventListener('change', handleResearchModeToggle);
+                // Trigger once in case it's pre-checked via preset
+                if (rm.checked) handleResearchModeToggle();
+            }
+        }
+
+        // Quick Mode helper: makes the recommended validation flow (Research + Next Bar + synthetic) one-click easy
+        function handleQuickModeToggle() {
+            const qm = document.getElementById('quick_mode');
+            const rm = document.getElementById('research_mode');
+            const nextBar = document.getElementById('entry_on_next_bar');
+            const useReal = document.getElementById('use_real_data');
+
+            if (qm && qm.checked) {
+                if (rm) rm.checked = true;
+                if (nextBar) nextBar.checked = true;
+                if (useReal) useReal.checked = false;   // Quick Mode forces synthetic for speed
+
+                // Optional: make a short fast window
+                const monthsEl = document.getElementById('months');
+                const foldsEl = document.getElementById('folds');
+                if (monthsEl && parseInt(monthsEl.value) > 4) monthsEl.value = 3;
+                if (foldsEl) foldsEl.value = 1;
+
+                showToast('Quick Mode enabled — Research + Next Bar auto-checked, synthetic data forced for fastest full pipeline test (MC + GPU + costs)', false);
+            }
+        }
+
+        // === Compact Market Rail for the Lab (stunning, consistent, always tells you the truth) ===
+        async function updateLabMarket() {
+            try {
+                const r = await fetch('/api/market/status');
+                const m = await r.json();
+                const pill = document.getElementById('lab-market-pill');
+                const txt = document.getElementById('lab-market-text');
+                const dot = document.getElementById('lab-market-dot');
+                const det = document.getElementById('lab-market-detail');
+                const clk = document.getElementById('lab-ist-clock');
+
+                if (!pill || !txt) return;
+
+                const open = m.is_market_open;
+                const safe = m.is_safe_trading_window;
+                const exp = m.is_expiry_day;
+
+                let cls = open 
+                    ? (safe ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300' : 'bg-amber-900/40 border-amber-700 text-amber-300')
+                    : 'bg-amber-900/30 border-amber-800 text-amber-300';
+                let dcls = open ? (safe ? 'bg-emerald-400' : 'bg-amber-400') : 'bg-amber-400';
+
+                pill.className = `px-3 py-0.5 rounded-full border text-[10px] font-bold flex items-center gap-x-1.5 ${cls}`;
+                dot.className = `w-1.5 h-1.5 rounded-full ${dcls}`;
+                txt.textContent = m.session_status || (open ? 'OPEN' : 'CLOSED');
+
+                let ex = exp ? ' • EXPIRY' : (open && !safe ? ' • OUTSIDE SAFE' : '');
+                if (det) det.textContent = (m.ist_time || '') + ex;
+                if (clk) clk.textContent = m.ist_time || '';
+            } catch (_) {}
+        }
+
+        // Initial
+        document.addEventListener('DOMContentLoaded', () => {
+            // Default to Run tab
+            switchTab('run');
+
+            // Do NOT auto-force "Current Live Params" on every load.
+            // User can click the "Current Live Params" button manually when they want it.
+            // Form starts with its static HTML defaults so toggling feels natural.
+
+            // Live market context in the lab
+            updateLabMarket();
+            setInterval(updateLabMarket, 20000);
+
+            // Initialize Research Mode UI (indicator + auto-disable real data)
+            initResearchModeUI();
+
+            // Quick Mode toggle handler for the recommended fast validation flow
+            const qmEl = document.getElementById('quick_mode');
+            if (qmEl) {
+                qmEl.addEventListener('change', handleQuickModeToggle);
+            }
+
+            // Gentle hint
+            setTimeout(() => {
+                const pill = document.getElementById('status-pill');
+                if (pill && pill.textContent.includes('READY')) {
+                    // nothing
+                }
+            }, 1200);
+
+            // Pre-load learnings
+            setTimeout(() => {
+                fetch('/api/memory/insights').then(r => r.json()).catch(() => {});
+            }, 1800);
+        });
+    </script>
+</body>
+</html>

@@ -83,9 +83,30 @@ def is_entry_window_open(at: datetime.datetime = None) -> bool:
     return first_entry <= current.time() <= last_entry
 
 
+def is_safe_trading_window(at: datetime.datetime = None) -> bool:
+    """
+    Conservative trading window that avoids the worst noise periods.
+    Trader reality: First 30 minutes after 9:15 and last 15-20 minutes before 15:30
+    are full of fake breakouts, auction effects, and gamma hedging noise on Nifty.
+    """
+    current = at or now_ist()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=IST)
+    current = current.astimezone(IST)
+
+    if not is_market_open(current):
+        return False
+
+    safe_open = datetime.time(9, 45)
+    safe_close = datetime.time(15, 15)
+    return safe_open <= current.time() <= safe_close
+
+
 def is_expiry_day(d: datetime.date = None) -> bool:
     """Approximate Nifty futures expiry (last Thursday of the month)."""
     day = d or now_ist().date()
+    if day.weekday() != 3:  # not Thursday
+        return False
     # Last Thursday: find the last Thu <= last day of month
     if day.weekday() != 3:  # not Thursday
         return False
@@ -112,3 +133,30 @@ MARKET_HOLIDAYS_2027 = {
     # ... add real dates when published
 }
 MARKET_HOLIDAYS = MARKET_HOLIDAYS_2026 | MARKET_HOLIDAYS_2027  # union for multi-year support
+
+
+def get_market_status() -> dict:
+    """
+    Rich status for the web GUI / terminals.
+    Senior finance dev requirement: always know exactly where you are in the session.
+    """
+    now = now_ist()
+    open_ = is_market_open(now)
+    safe = is_safe_trading_window(now)
+    expiry = is_expiry_day(now.date())
+
+    next_event = "Market open 09:15 IST" if not open_ else "Safe window closes 15:15 IST"
+    if expiry:
+        next_event = "EXPIRY DAY — trade with extreme caution"
+
+    return {
+        "ist_time": now.strftime("%H:%M:%S IST"),
+        "date": now.strftime("%Y-%m-%d"),
+        "is_market_open": open_,
+        "is_safe_trading_window": safe,
+        "is_expiry_day": expiry,
+        "session_status": "OPEN" if open_ else "CLOSED",
+        "trading_allowed": safe,  # conservative recommendation
+        "next_event": next_event,
+        "day_of_week": now.strftime("%A"),
+    }

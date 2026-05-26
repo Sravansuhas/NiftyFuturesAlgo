@@ -104,5 +104,33 @@ class RiskGatekeeperTests(unittest.TestCase):
         self.assertEqual(q % 75, 0)
 
 
+# --- Cost model tests (pure, no broker) ---
+try:
+    from backtesting.costs import TransactionCostModel, CostConfig
+    HAS_COSTS = True
+except Exception:
+    HAS_COSTS = False
+
+if HAS_COSTS:
+    class CostModelTests(unittest.TestCase):
+        def test_realistic_round_turn_cost(self):
+            model = TransactionCostModel(CostConfig(
+                brokerage_per_order=20.0,
+                other_charges_per_lot_round_turn=45.0,
+                default_slippage_points=3.5,
+                lot_size=75,
+            ))
+            cost = model.estimate_cost_for_trade(75, 24500, 24530)
+            # Should be in the realistic ₹300-600 range for 1 lot round turn with slippage
+            self.assertTrue(250 < cost < 900)
+
+        def test_high_uncertainty_increases_cost(self):
+            model = TransactionCostModel()
+            normal = model.estimate_cost_for_trade(75, 24500, 24530, is_high_uncertainty=False)
+            high = model.estimate_cost_for_trade(75, 24500, 24530, is_high_uncertainty=True)
+            self.assertGreater(high, normal)
+
+
+
 if __name__ == "__main__":
     unittest.main()

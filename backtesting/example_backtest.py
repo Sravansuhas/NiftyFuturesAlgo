@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import pandas as pd
 import numpy as np
 from backtesting.backtester import Backtester, BaseBacktestStrategy
+from backtesting.costs import TransactionCostModel, CostConfig
 
 
 class SimpleBreakoutStrategy(BaseBacktestStrategy):
@@ -81,7 +82,14 @@ if __name__ == "__main__":
     data = generate_sample_data(700)
     strategy = SimpleBreakoutStrategy(profit_target=25.0, stop_loss=15.0)
 
-    backtester = Backtester(strategy, initial_capital=1_000_000, slippage_pts=4.0, commission_per_lot=25.0)
+    # Realistic Zerodha Nifty futures costs (this is the key improvement)
+    cost_model = TransactionCostModel(CostConfig(
+        brokerage_per_order=20.0,
+        other_charges_per_lot_round_turn=45.0,
+        default_slippage_points=4.0,   # slightly conservative for generated data
+        lot_size=75,
+    ))
+    backtester = Backtester(strategy, initial_capital=1_000_000, cost_model=cost_model)
     results = backtester.run(data)
 
     print("\nBacktest Summary:")

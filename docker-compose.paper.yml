@@ -1,0 +1,70 @@
+# =============================================================================
+# NiftyFuturesAlgo - FAST Paper Trading Compose File
+# =============================================================================
+#
+# Recommended command:
+#   docker-compose -f docker-compose.paper.yml up --build
+#
+# Key Features:
+# - Fast startup (no forced Postgres/Redis)
+# - Clearly shows "PAPER TRADING MODE" banner on start
+# - Hot-reloads your code changes (volume mount)
+# - Safe by default (FORCE_DRY_RUN=true)
+#
+# To switch to LIVE TRADING (very dangerous):
+#   - Set FORCE_DRY_RUN=false in your .env
+#   - Then run the main docker-compose.yml instead
+#
+# You will see a huge ASCII banner on startup telling you exactly
+# whether you are in PAPER or LIVE mode.
+# =============================================================================
+
+services:
+  trading-app:
+    build: .
+    container_name: nifty-paper-trader
+    env_file:
+      - .env
+    environment:
+      # Force paper trading mode visually
+      - TRADING_MODE=paper
+      - FORCE_DRY_RUN=true
+    volumes:
+      # Hot reload for development
+      - .:/app
+    tty: true
+    stdin_open: true
+    restart: unless-stopped
+    # We don't need the heavy DBs for basic paper trading
+    # If you later want Postgres/Redis, uncomment the sections below
+
+# =============================================================================
+# OPTIONAL SERVICES (Uncomment only if you actually need them)
+# =============================================================================
+
+#  postgres:
+#    image: postgres:16-alpine
+#    container_name: nifty-postgres
+#    environment:
+#      POSTGRES_USER: trading
+#      POSTGRES_PASSWORD: trading123
+#      POSTGRES_DB: trading
+#    ports:
+#      - "5432:5432"
+#    volumes:
+#      - postgres_paper_data:/var/lib/postgresql/data
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U trading"]
+#      interval: 10s
+#      timeout: 5s
+#      retries: 5
+
+#  redis:
+#    image: redis:7-alpine
+#    container_name: nifty-redis
+#    ports:
+#      - "6379:6379"
+#    command: redis-server --appendonly yes
+
+# volumes:
+#   postgres_paper_data:

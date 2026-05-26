@@ -10,10 +10,34 @@ The project is built as **trading infrastructure first** and strategy logic seco
 - **Live Trading Readiness**: **Dry-run / paper only**. Full validation + manual approval required before any LIVE capital.
 
 **Important**: This system is now a solid foundation. **Do not use real capital** until you have:
-1. Valid historical backtests with real NIFTY futures data over multiple regimes.
-2. Extended paper trading (weeks) with live data feed.
+1. Valid historical backtests with real NIFTY futures data over multiple regimes **with the cost model enabled**.
+2. Extended paper trading (weeks) with live data feed + real reconciliation.
 3. Reviewed all audit logs and recon behavior.
 4. Independent review of risk parameters and compliance.
+
+### Trader Notes — Pain Points We Explicitly Addressed
+- Opening 30 minutes on Nifty is toxic for breakout systems (fake volume, auction imbalance).
+- Last 15 minutes often sees violent gamma hedging by option writers.
+- Expiry weeks destroy many "good on paper" strategies due to vol crush + pinning.
+- Gross P&L backtests are lying to you. Real Zerodha all-in round-turn + slippage on Nifty futures is rarely under ₹350–600 per lot.
+- Rate limits + slow iteration kill research velocity — hence the cache layer.
+
+### Running Paper Trading (Current Recommended Approach)
+
+After the 90-day backtest reality check, we now have dedicated paper trading parameters:
+
+```python
+from app.paper_trading_params import DEFAULT_PAPER_PARAMS, AGGRESSIVE_PAPER_PARAMS
+from app.strategy import PreviousCandleBreakoutStrategy
+
+# Recommended for most people starting paper trading
+strategy = PreviousCandleBreakoutStrategy(kite, paper_params=DEFAULT_PAPER_PARAMS)
+
+# More active (only after you are comfortable)
+# strategy = PreviousCandleBreakoutStrategy(kite, paper_params=AGGRESSIVE_PAPER_PARAMS)
+```
+
+See `app/paper_trading_params.py` for details on the presets.
 
 ## Core Principles
 
@@ -254,7 +278,7 @@ Trading can be blocked by:
 |   |-- state_machine.py
 |   |-- strategy.py
 |   |-- token_manager.py
-|   `-- retriving_token.py   # legacy token helper (prefer generate_token.py)
+|   `-- retrieving_token.py  # legacy token helper (prefer generate_token.py)
 |-- backtesting/
 |   |-- backtester.py
 |   |-- metrics.py
@@ -357,21 +381,36 @@ PYTHONPATH=. python -m app.main
 
 **Note**: backtest scripts that require real Kite data will fall back to synthetic when token missing/invalid or outside market hours — this is intentional graceful behavior.
 
-## Completed Improvements (Edge Cases & Hardening)
+## Completed Improvements (This Iteration — Trader-Driven)
 
-- **No more silent price/volume simulation in LIVE_MODE**: `DataFeedError` is raised; main transitions to TRADING_DISABLED.
-- **Previous candle breakout actually works**: Live strategy seeds prev H/L/V from historical 5min on startup + rolls intraday via 5min buckets. Backtest strategy uses true prior bar.
-- **Dynamic lot sizing**: Strategy now calls RiskGatekeeper.calculate_order_quantity (respects streaks, caps, lot alignment).
-- **Daily risk reset**: Counters (daily_loss, trades_today, streaks) reset automatically at new trading day start.
-- **Import & packaging fixed**: Proper package with relative imports in app/, consistent PYTHONPATH usage, dead duplicate config removed.
-- **Main driver loop solid**: run_once support, DataFeedError handling, recon integration, day reset, fail-closed on errors.
-- **Backtester realism**: Optional slippage (pts) + per-lot commission modeled on entry/exit. Metrics handle inf profit-factor, 0 trades, etc.
-- **Reconciliation & risk edges**: Partial fills noted, multi-position netting + alarm, tiny stop distance guard, capital<=0 guard.
-- **Calendar**: is_expiry_day + get_nifty_expiry_for_month helpers, multi-year holiday union (2026+2027 placeholders).
-- **Strategy edges**: Entry window + late expiry day caution, new-day has_entered reset, graceful vol degradation.
-- **Docker & run**: Updated for reliable PYTHONPATH + `python -m app.main`.
-- **Tests**: Extended for daily reset, sizing edges, expiry detection.
-- Broker state remains authoritative; all orders through gatekeeper.
+**High Priority Items Closed (per detailed review):**
+- **Realistic transaction costs + slippage (biggest single gap)**: New `backtesting/costs.py` with Zerodha Nifty FUT modeling (flat ₹20 brokerage + statutory + realistic 3–4+ pt slippage round-turn). A previous gross PF 4.67 on 30 days now gets properly compressed. Every serious backtest must run with the cost model enabled.
+- **Session time filters**: Signals blocked 9:15–9:45 (opening noise) and after 15:15 (gamma hedging / fakeouts). Both live strategy and backtest strategy respect this.
+- **Expiry day special logic**: On/near last Thursday, new entries are blocked or heavily de-risked after ~13:45. This is a real-world pain point most retail systems ignore until it hurts them.
+- **Data caching layer** (`backtesting/data_cache.py`): Parquet (preferred) or CSV local cache. 90–180 day multi-expiry studies are now fast and kind to your Kite rate limits.
+- **Longer history default**: The main real-data runner now defaults to 90 days + cache.
+
+**Other Hardening:**
+- Previous candle breakout is now actually functional (seeded + rolled).
+- No silent simulation in LIVE (DataFeedError + state transition).
+- Daily risk reset, dynamic sizing, proper imports/package, recon robustness, etc. (carried forward and improved).
+
+**Post 90-Day Reality Check (Critical Lesson)**
+A 30-day run produced PF 4.67. The same logic on 90 days of real data produced **PF 0.43, -182% return, 869 trades**.
+
+This is the single most important lesson so far:
+- The original parameters were dangerously overfit to a short favorable regime.
+- High trade frequency + no session discipline + fixed targets + no volatility filter = recipe for account destruction when regimes change.
+
+The hardened version in `backtesting/previous_candle_backtest_strategy.py` (with `StrategyParams`) now includes:
+- Strict 10:00–15:00 IST session filter
+- ATR-based breakout threshold + minimum volatility filter
+- ATR-based profit targets and stops
+- Hard cap of 2 trades per day
+- Lightweight trend filter + expiry day caution
+- Significantly lower risk per trade
+
+**Current Recommendation**: Use the hardened `StrategyParams` defaults. Re-test across multiple contracts. Only consider paper trading after seeing acceptable net expectancy (PF ≥ 1.8–2.0 after realistic costs) over at least 6–12 months of data with max DD under 8–10%.
 
 ## Remaining / Future (Explicitly Not Hallucinated as Done)
 

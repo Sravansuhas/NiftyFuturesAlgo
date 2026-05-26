@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap');
+
+        :root {
+            --font-sans: 'Inter', system_ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            -webkit-font-smoothing: antialiased;
+            background-color: #0A0C14;
+            color: #E5E8F0;
+        }
+
+        /* Bloomberg-grade Terminal Design System */
+        :root {
+            --bg: #0A0C14;
+            --surface: #11141F;
+            --border: #252B3A;
+            --text: #E5E8F0;
+            --text-muted: #8A8F9E;
+            --positive: #22C55E;
+            --negative: #EF4444;
+            --warning: #F59E0B;
+            --info: #67E8F9;
+        }
+
+        .terminal-font {
+            font-family: var(--font-mono);
+            font-feature-settings: "ss02", "tnum";
+        }
+
+        .panel {
+            background-color: #11141F;
+            border: 1px solid #252B3A;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+        }
+
+        .surface {
+            background-color: #0F111A;
+        }
+
+        .metric-value {
+            font-feature-settings: "tnum";
+            font-variant-numeric: tabular-nums;
+        }
+
+        .status-bar {
+            background: #0F111A;
+            border-bottom: 1px solid #252B3A;
+        }
+
+        .data-table th {
+            font-weight: 500;
+            color: #64748B;
+            font-size: 0.65rem;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .live-dot {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+
+        .section-title {
+            font-size: 0.7rem;
+            letter-spacing: 0.75px;
+            font-weight: 600;
+            color: #64748B;
+            text-transform: uppercase;
+        }
+
+        .number {
+            font-variant-numeric: tabular-nums;
+        }
+
+        .pnl-positive { color: #22C55E; }
+        .pnl-negative { color: #F87171; }
+    </style>
+</head>
+<body class="bg-[#0A0C14] text-[#E5E7EB] min-h-screen">
+    <!-- Top Market Rail (Bloomberg-grade, always visible, stunning) -->
+    <div id="market-rail" 
+         class="px-6 py-2.5 flex items-center justify-between bg-[#0f1118] border-b border-gray-800 text-sm font-mono">
+        <div class="flex items-center gap-x-4">
+            <div class="flex items-center gap-x-2">
+                <i class="fa-solid fa-globe text-emerald-400"></i>
+                <span class="font-semibold tracking-tighter text-base">NIFTY FUTURES</span>
+            </div>
+            
+            <!-- Market Status Pill (populated by JS) -->
+            <div id="market-pill" 
+                 class="px-4 py-1 rounded-full text-xs font-bold flex items-center gap-x-2 border transition-all">
+                <span id="market-dot" class="w-2 h-2 rounded-full animate-pulse"></span>
+                <span id="market-text">CHECKING...</span>
+            </div>
+            
+            <div id="market-detail" class="text-xs text-gray-400 hidden md:block"></div>
+        </div>
+
+        <div class="flex items-center gap-x-3 text-xs">
+            <div id="ist-clock" class="font-semibold text-emerald-300"></div>
+            
+            <!-- API / Kite Status Symbol -->
+            <div id="api-status" class="flex items-center gap-x-1.5 px-2 py-0.5 rounded-full bg-[#11141F] border border-gray-800" title="Kite API Connection">
+                <span id="api-dot" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span class="text-[10px] text-gray-400 font-medium">API</span>
+            </div>
+
+            <!-- Prominent Backtest Lab Button -->
+            <a href="/backtest" 
+               class="inline-flex items-center gap-x-2 px-5 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 transition rounded-2xl font-semibold text-sm shadow-lg shadow-emerald-900/30">
+                <i class="fa-solid fa-flask"></i>
+                <span>OPEN ALGO LAB</span>
+            </a>
+        </div>
+    </div>
+
+    <!-- Original Status Bar (now below the market rail) -->
+    <div class="status-bar px-6 py-3 flex items-center justify-between border-b border-gray-800">
+        <div class="flex items-center gap-x-4">
+            <div class="flex items-center gap-x-2">
+                <i class="fa-solid fa-chart-line text-2xl text-emerald-400"></i>
+                <div>
+                    <span class="font-semibold text-xl tracking-tighter">NIFTY ALGO</span>
+                    <span class="text-xs text-gray-500 ml-1">v0.5.1</span>
+                </div>
+            </div>
+            
+            <!-- Mode Badge -->
+            <div id="mode-badge" 
+                 class="px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-x-1.5 bg-emerald-900/30 text-emerald-400 border border-emerald-800">
+                <i class="fa-solid fa-flask"></i>
+                <span id="mode-text">PAPER MODE</span>
+            </div>
+        </div>
+
+        <div class="flex items-center gap-x-6 text-sm">
+            <div class="flex items-center gap-x-2">
+                <div class="w-2 h-2 bg-emerald-400 rounded-full live-dot"></div>
+                <span class="text-gray-400">LIVE</span>
+                <span id="last-update" class="font-mono text-xs text-gray-500">—</span>
+            </div>
+            
+            <div class="text-gray-500 text-xs font-mono">
+                {{ "Today" }} | IST
+            </div>
+        </div>
+    </div>
+
+    <div class="max-w-[1600px] mx-auto p-6">
+        
+        <!-- Top Metrics Row -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            
+            <!-- Capital & P&L -->
+            <div class="panel rounded-2xl p-5">
+                <div class="section-title mb-2">CAPITAL &amp; P&amp;L</div>
+                <div class="flex justify-between items-end">
+                    <div>
+                        <div class="text-3xl font-semibold tracking-tighter number" id="capital">1,000,000</div>
+                        <div class="text-xs text-gray-500">Initial Capital</div>
+                    </div>
+                    <div class="text-right">
+                        <div id="daily-pnl" class="text-2xl font-semibold number terminal-green">0.00</div>
+                        <div class="text-xs text-gray-500">Daily P&amp;L</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Position -->
+            <div class="panel rounded-2xl p-5">
+                <div class="section-title mb-2">POSITION</div>
+                <div class="flex items-center justify-between">
+                    <div>
+                        <div id="position-qty" class="text-3xl font-semibold number">0</div>
+                        <div id="position-symbol" class="text-sm text-gray-400 font-mono">FLAT</div>
+                    </div>
+                    <div class="text-right">
+                        <div id="position-avg" class="font-mono text-lg number text-gray-400">—</div>
+                        <div class="text-xs text-gray-500">Avg Price</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Risk Metrics -->
+            <div class="panel rounded-2xl p-5">
+                <div class="section-title mb-2">RISK</div>
+                <div class="space-y-2">
+                    <div class="flex justify-between text-sm">
+                        <span class="text-gray-400">Daily Loss</span>
+                        <span id="daily-loss" class="number font-semibold">0.00</span>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <span class="text-gray-400">Max DD</span>
+                        <span id="max-dd" class="number font-semibold">0.00%</span>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <span class="text-gray-400">Trades Today</span>
+                        <span id="trades-today" class="number font-semibold">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- System Health -->
+            <div class="panel rounded-2xl p-5">
+                <div class="section-title mb-2">SYSTEM</div>
+                <div class="flex items-center justify-between">
+                    <div>
+                        <div id="system-state" class="font-semibold text-lg">PAPER_MODE</div>
+                        <div class="text-xs text-gray-500">State Machine</div>
+                    </div>
+                    <div class="text-right">
+                        <div id="token-status" class="text-emerald-400 text-sm flex items-center gap-x-1">
+                            <i class="fa-solid fa-check-circle"></i>
+                            <span>Token OK</span>
+                        </div>
+                        <div class="text-xs text-gray-500">Last Recon: <span id="last-recon">—</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content Grid -->
+        <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+            
+            <!-- Recent Trades -->
+            <div class="xl:col-span-2 panel rounded-3xl p-5">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <span class="section-title">RECENT TRADES</span>
+                    </div>
+                    <div class="text-xs text-gray-500">Auto-refreshing</div>
+                </div>
+                
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b border-gray-800 text-left">
+                                <th class="py-2 pr-4">Time</th>
+                                <th class="py-2 pr-4">Side</th>
+                                <th class="py-2 pr-4">Qty</th>
+                                <th class="py-2 pr-4">Price</th>
+                                <th class="py-2">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades-table" class="font-mono text-xs divide-y divide-gray-800">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Live Diagnostics -->
+            <div class="panel rounded-3xl p-5 flex flex-col">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="section-title">LIVE DIAGNOSTICS</span>
+                    <div class="text-xs px-2 py-0.5 bg-gray-800 rounded text-gray-400">SSE</div>
+                </div>
+                
+                <div id="diagnostics-feed" 
+                     class="flex-1 overflow-y-auto text-xs terminal-font space-y-1 bg-[#0a0c12] p-3 rounded-2xl border border-gray-800 text-gray-300 h-80">
+                    <!-- Real-time messages injected here -->
+                </div>
+            </div>
+
+            <!-- Last Significant Action -->
+            <div class="panel rounded-3xl p-5 xl:col-span-3">
+                <div class="section-title mb-2">LAST SIGNIFICANT ACTION</div>
+                <div id="last-action" class="font-mono text-sm text-emerald-300 bg-[#0a0c12] p-3 rounded-2xl border border-gray-800 min-h-[42px]">
+                    Waiting for first decision...
+                </div>
+            </div>
+
+            <!-- Equity Curve -->
+            <div class="panel rounded-3xl p-5 xl:col-span-2">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="section-title">EQUITY CURVE (PAPER)</span>
+                    <span class="text-xs text-gray-500">Live updating</span>
+                </div>
+                <div class="h-64">
+                    <canvas id="equity-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- Strategy Parameters -->
+            <div class="panel rounded-3xl p-5">
+                <div class="section-title mb-4">CURRENT STRATEGY PARAMS</div>
+                
+                <div class="space-y-3 text-sm">
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Session</span>
+                        <span class="font-mono" id="param-session">09:45 — 15:10</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Breakout (ATR)</span>
+                        <span class="font-mono" id="param-buffer">0.75× ATR</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Max Trades / Day</span>
+                        <span class="font-mono" id="param-max-trades">3</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Risk / Trade</span>
+                        <span class="font-mono" id="param-risk">0.35%</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Cooldown</span>
+                        <span class="font-mono" id="param-cooldown">12 min</span>
+                    </div>
+                    <div class="flex justify-between pt-2 border-t border-gray-700 mt-2">
+                        <span class="text-gray-400">Current Regime</span>
+                        <span id="current-regime" class="font-semibold text-amber-400">Normal</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Risk Multiplier</span>
+                        <span id="risk-mult" class="font-mono">1.00x</span>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    <!-- Chart.js for equity curve (load first) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <script>
+        // Tailwind script
+        function initializeTailwind() {
+            document.documentElement.style.setProperty('--accent', '#22c55e');
+        }
+
+        // SSE for live updates
+        function startLiveUpdates() {
+            const eventSource = new EventSource('/api/stream');
+            
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                updateDashboard(data);
+            };
+
+            eventSource.onerror = function() {
+                console.log("SSE connection lost, retrying...");
+            };
+        }
+
+        function updateDashboard(data) {
+            if (data.error) return;
+
+            // Mode
+            const modeBadge = document.getElementById('mode-badge');
+            const modeText = document.getElementById('mode-text');
+            
+            if (data.mode === 'PAPER') {
+                modeBadge.className = 'px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-x-1.5 bg-emerald-900/30 text-emerald-400 border border-emerald-800';
+                modeText.innerHTML = 'PAPER MODE';
+            } else {
+                modeBadge.className = 'px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-x-1.5 bg-red-900/30 text-red-400 border border-red-800';
+                modeText.innerHTML = 'LIVE MODE';
+            }
+
+            // Metrics
+            document.getElementById('capital').innerText = data.capital.toLocaleString();
+            
+            const pnlEl = document.getElementById('daily-pnl');
+            pnlEl.innerText = data.daily_pnl.toFixed(2);
+            pnlEl.className = data.daily_pnl >= 0 ? 'text-2xl font-semibold number terminal-green' : 'text-2xl font-semibold number terminal-red';
+
+            document.getElementById('daily-loss').innerText = data.daily_loss.toFixed(2);
+            document.getElementById('max-dd').innerText = data.max_drawdown + '%';
+            document.getElementById('trades-today').innerText = data.trades_today;
+
+            // Position
+            const qtyEl = document.getElementById('position-qty');
+            const symbolEl = document.getElementById('position-symbol');
+            
+            if (data.position.quantity === 0) {
+                qtyEl.innerText = 'FLAT';
+                qtyEl.className = 'text-3xl font-semibold number text-gray-400';
+                symbolEl.innerText = '—';
+            } else {
+                qtyEl.innerText = data.position.quantity;
+                qtyEl.className = data.position.quantity > 0 ? 'text-3xl font-semibold number terminal-green' : 'text-3xl font-semibold number terminal-red';
+                symbolEl.innerText = data.position.symbol || 'NIFTY';
+            }
+
+            document.getElementById('position-avg').innerText = data.position.avg_price ? data.position.avg_price.toFixed(2) : '—';
+
+            // Regime info
+            if (data.vol_regime) {
+                const regimeEl = document.getElementById('current-regime');
+                regimeEl.innerText = data.vol_regime.toUpperCase();
+                regimeEl.className = data.vol_regime === 'high' ? 'font-semibold text-red-400' :
+                                     data.vol_regime === 'low' ? 'font-semibold text-amber-400' :
+                                     'font-semibold text-emerald-400';
+            }
+            if (data.risk_mult) {
+                document.getElementById('risk-mult').innerText = data.risk_mult.toFixed(2) + 'x';
+            }
+
+            // State
+            document.getElementById('system-state').innerText = data.state;
+            document.getElementById('last-recon').innerText = data.last_recon || '0';
+
+            // Timestamp
+            document.getElementById('last-update').innerText = new Date(data.timestamp).toLocaleTimeString();
+        }
+
+        // Fetch recent trades
+        async function refreshTrades() {
+            try {
+                const res = await fetch('/api/trades?limit=15');
+                const data = await res.json();
+                
+                const tbody = document.getElementById('trades-table');
+                tbody.innerHTML = '';
+
+                if (!data.trades || data.trades.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-gray-500 text-xs">No trades yet</td></tr>`;
+                    return;
+                }
+
+                data.trades.forEach(trade => {
+                    const ts = new Date(trade.ts * 1000).toLocaleTimeString();
+                    const payload = trade.payload || {};
+                    
+                    const row = `
+                        <tr class="hover:bg-gray-800/50">
+                            <td class="py-2 pr-4 text-gray-400">${ts}</td>
+                            <td class="py-2 pr-4 font-semibold ${payload.transaction_type === 'BUY' ? 'terminal-green' : 'terminal-red'}">
+                                ${payload.transaction_type || '—'}
+                            </td>
+                            <td class="py-2 pr-4">${payload.quantity || '-'}</td>
+                            <td class="py-2 pr-4">${payload.price ? payload.price.toFixed(2) : '-'}</td>
+                            <td class="py-2">
+                                <span class="px-2 py-0.5 text-[10px] rounded bg-gray-800">${trade.event_type}</span>
+                            </td>
+                        </tr>
+                    `;
+                    tbody.innerHTML += row;
+                });
+            } catch (e) {
+                console.error("Failed to fetch trades", e);
+            }
+        }
+
+        // Periodic refresh for trades
+        function startTradeRefresh() {
+            refreshTrades();
+            setInterval(refreshTrades, 8000);
+        }
+
+        // Initial load
+        function initialize() {
+            initializeTailwind();
+            startLiveUpdates();
+            startTradeRefresh();
+            
+            // Initial status fetch
+            fetch('/api/status').then(r => r.json()).then(updateDashboard);
+
+            // Stunning live market rail (the thing users complained was missing)
+            startMarketRail();
+        }
+
+        let equityChart = null;
+
+        function initEquityChart() {
+            const ctx = document.getElementById('equity-chart');
+            if (!ctx) return;
+
+            equityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Equity',
+                        data: [],
+                        borderColor: '#22c55e',
+                        borderWidth: 2,
+                        fill: true,
+                        backgroundColor: 'rgba(34, 197, 94, 0.08)',
+                        tension: 0.3,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { display: false },
+                        y: { 
+                            grid: { color: '#1f2937' },
+                            ticks: { color: '#64748b', font: { size: 10 } }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { mode: 'index', intersect: false }
+                    },
+                    animation: { duration: 300 }
+                }
+            });
+        }
+
+        function updateEquityChart(history) {
+            if (!equityChart || !history || history.length === 0) return;
+
+            const labels = history.map(h => new Date(h.ts * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}));
+            const data = history.map(h => h.equity);
+
+            equityChart.data.labels = labels;
+            equityChart.data.datasets[0].data = data;
+            equityChart.update();
+        }
+
+        // Override the update function to also handle the chart
+        const originalUpdate = window.updateDashboard;
+        window.updateDashboard = function(data) {
+            if (originalUpdate) originalUpdate(data);
+            
+            if (data.equity_history) {
+                updateEquityChart(data.equity_history);
+            }
+            
+            // Update last action
+            const lastAction = document.getElementById('last-action');
+            if (lastAction && data.last_action) {
+                lastAction.innerText = data.last_action;
+            }
+        };
+
+        // Initialize chart on load
+        function initializeWithChart() {
+            initialize();
+            initEquityChart();
+        }
+
+        // === Live Market Status Rail (stunning, always accurate, finance terminal standard) ===
+        let marketUpdateInterval = null;
+
+        async function updateMarketRail() {
+            try {
+                const res = await fetch('/api/market/status');
+                const m = await res.json();
+
+                const pill = document.getElementById('market-pill');
+                const text = document.getElementById('market-text');
+                const dot = document.getElementById('market-dot');
+                const detail = document.getElementById('market-detail');
+                const clock = document.getElementById('ist-clock');
+
+                if (!pill || !text) return;
+
+                const isOpen = m.is_market_open;
+                const isSafe = m.is_safe_trading_window;
+                const isExpiry = m.is_expiry_day;
+
+                let bg = 'bg-gray-800 border-gray-700 text-gray-300';
+                let dotColor = 'bg-gray-400';
+
+                if (isOpen) {
+                    bg = isSafe ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300' : 'bg-amber-900/40 border-amber-700 text-amber-300';
+                    dotColor = isSafe ? 'bg-emerald-400' : 'bg-amber-400';
+                } else {
+                    bg = 'bg-amber-900/30 border-amber-800 text-amber-300';
+                    dotColor = 'bg-amber-400';
+                }
+
+                pill.className = `px-4 py-1 rounded-full text-xs font-bold flex items-center gap-x-2 border transition-all ${bg}`;
+                dot.className = `w-2 h-2 rounded-full animate-pulse ${dotColor}`;
+                text.textContent = m.session_status || (isOpen ? 'OPEN' : 'CLOSED');
+
+                let extra = '';
+                if (isExpiry) extra = ' • EXPIRY DAY — CAUTION';
+                if (isOpen && !isSafe) extra = ' • OUTSIDE SAFE WINDOW';
+                detail.innerHTML = `${m.ist_time || ''}${extra}`;
+                detail.classList.remove('hidden');
+
+                // Show date + time for better context (user request)
+                if (clock) {
+                    const now = new Date();
+                    const dateStr = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+                    const timeStr = m.ist_time || now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+                    clock.textContent = `${dateStr} • ${timeStr} IST`;
+                }
+            } catch (e) {
+                // On failure, show degraded API status
+                const apiDot = document.getElementById('api-dot');
+                if (apiDot) {
+                    apiDot.className = 'w-2 h-2 rounded-full bg-amber-400';
+                }
+            }
+        }
+
+        function startMarketRail() {
+            updateMarketRail();
+            if (marketUpdateInterval) clearInterval(marketUpdateInterval);
+            marketUpdateInterval = setInterval(updateMarketRail, 15000); // every 15s — lightweight and robust
+        }
+
+        window.onload = initializeWithChart;
+    </script>
+</body>
+</html>

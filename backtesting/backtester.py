@@ -4,9 +4,11 @@ Clean, modular futures backtesting engine.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
+
+from backtesting.costs import TransactionCostModel, default_cost_model
 
 
 class BaseBacktestStrategy(ABC):
@@ -32,16 +34,31 @@ class BaseBacktestStrategy(ABC):
 
 class Backtester:
     def __init__(self, strategy: BaseBacktestStrategy, initial_capital: float = 1_000_000,
-                 default_quantity: int = 75, slippage_pts: float = 3.0, commission_per_lot: float = 20.0):
+                 default_quantity: int = 75,
+                 cost_model: Optional[TransactionCostModel] = None,
+                 slippage_pts: float = 3.5,
+                 verbose: bool = True,
+                 cost_multiplier: float = 1.0):
         """
-        slippage_pts: round-turn points to subtract from theoretical fill price (realistic for Nifty FUT)
-        commission_per_lot: approx transaction cost per lot (brokerage + STT + other; tune to your broker)
+        cost_model: Realistic Zerodha Nifty futures cost + slippage model (recommended).
+                  Falls back to a conservative default if not provided.
+        slippage_pts: Override default slippage for this run (still used by cost_model).
+        cost_multiplier: Scale all costs by this factor (1.0 = normal, 2.0 = double costs, etc.)
+                         Useful for sensitivity analysis.
         """
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.default_quantity = default_quantity
         self.slippage_pts = slippage_pts
-        self.commission_per_lot = commission_per_lot
+        self.verbose = verbose
+        self.cost_multiplier = cost_multiplier
+
+        base_model = cost_model or default_cost_model
+        if cost_multiplier != 1.0:
+            self.cost_model = TransactionCostModel.with_multiplier(base_model.config, cost_multiplier)
+        else:
+            self.cost_model = base_model
+
         self.cash = initial_capital
         self.position = 0
         self.entry_price = 0.0
@@ -68,29 +85,73 @@ class Backtester:
         if data.empty:
             raise ValueError("Backtest data is empty")
 
-        print(f"\nStarting backtest on {len(data)} bars...")
+        if self.verbose:
+            print(f"\nStarting backtest on {len(data)} bars...")
 
         for idx, bar in data.iterrows():
             current_price = float(bar["close"])
 
-            if self.position != 0 and self.strategy.on_exit(bar, self.position, self.entry_price):
-                # Apply realistic costs on exit
-                effective_exit = current_price - (self.slippage_pts if self.position > 0 else -self.slippage_pts)
-                gross_pnl = (effective_exit - self.entry_price) * self.position
-                lots = max(1, abs(self.position) // 75)
-                costs = lots * self.commission_per_lot * 2  # round turn
-                pnl = gross_pnl - costs
-                self.cash += pnl
+            # === Rollover simulation (explicit P&L/cost on contract change) ===
+            is_rollover = False
+            if hasattr(bar, 'get'):
+                is_rollover = bool(bar.get('rollover', False))
+
+            if is_rollover and self.position != 0:
+                gross_pnl = (current_price - self.entry_price) * self.position
+                roll_cost = self._simulate_rollover_cost(current_price, abs(self.position))
+                net_pnl = gross_pnl - roll_cost
+
+                self.cash += net_pnl
                 self.trades.append({
                     "entry_time": self.entry_time,
                     "entry_price": self.entry_price,
                     "exit_time": idx,
                     "exit_price": current_price,
-                    "pnl": pnl,
+                    "pnl": net_pnl,
+                    "gross_pnl": gross_pnl,
+                    "quantity": abs(self.position),
+                    "direction": "BUY" if self.position > 0 else "SELL",
+                    "slippage_pts": 0,
+                    "total_costs": round(roll_cost, 2),
+                    "cost_model": "rollover_simulation",
+                    "is_rollover": True,
+                })
+                # Re-establish position seamlessly on the new contract
+                self.entry_price = current_price
+                self.entry_time = idx
+
+            # Normal exit logic
+            if self.position != 0 and self.strategy.on_exit(bar, self.position, self.entry_price):
+                # Gross theoretical P&L before costs
+                gross_pnl = (current_price - self.entry_price) * self.position
+
+                # Use the proper realistic cost model (Zerodha Nifty FUT)
+                is_high_uncertainty = False
+                net_pnl = self.cost_model.apply_to_pnl(
+                    gross_pnl=gross_pnl,
+                    quantity=self.position,
+                    entry_price=self.entry_price,
+                    exit_price=current_price,
+                    slippage_points=self.slippage_pts,
+                    is_high_uncertainty=is_high_uncertainty,
+                    bar_time=idx,
+                )
+
+                self.cash += net_pnl
+                lots = max(1, abs(self.position) // self.cost_model.config.lot_size)
+                total_cost = gross_pnl - net_pnl
+                self.trades.append({
+                    "entry_time": self.entry_time,
+                    "entry_price": self.entry_price,
+                    "exit_time": idx,
+                    "exit_price": current_price,
+                    "pnl": net_pnl,
+                    "gross_pnl": gross_pnl,
                     "quantity": abs(self.position),
                     "direction": "BUY" if self.position > 0 else "SELL",
                     "slippage_pts": self.slippage_pts,
-                    "costs": costs,
+                    "total_costs": round(total_cost, 2),
+                    "cost_model": repr(self.cost_model),
                 })
                 self.position = 0
                 self.entry_price = 0.0
@@ -103,10 +164,8 @@ class Backtester:
                     quantity = int(signal.get("quantity", self.default_quantity))
                     if quantity <= 0:
                         raise ValueError(f"Invalid signal quantity: {quantity}")
-                    # Apply slippage on entry fill
-                    effective_entry = current_price + (self.slippage_pts if direction > 0 else -self.slippage_pts)
                     self.position = direction * quantity
-                    self.entry_price = effective_entry
+                    self.entry_price = current_price
                     self.entry_time = idx
 
             self.equity_curve.append(self._mark_to_market_equity(current_price))
@@ -114,10 +173,11 @@ class Backtester:
         final_equity = self._mark_to_market_equity(float(data["close"].iloc[-1]))
         total_return = ((final_equity - self.initial_capital) / self.initial_capital) * 100
 
-        print("\nBacktest completed")
-        print(f"Final Equity : Rs {final_equity:,.2f}")
-        print(f"Total Return : {total_return:.2f}%")
-        print(f"Total Trades : {len(self.trades)}")
+        if self.verbose:
+            print("\nBacktest completed")
+            print(f"Final Equity : Rs {final_equity:,.2f}")
+            print(f"Total Return : {total_return:.2f}%")
+            print(f"Total Trades : {len(self.trades)}")
 
         return {
             "final_equity": final_equity,
@@ -125,3 +185,11 @@ class Backtester:
             "trades": self.trades,
             "equity_curve": self.equity_curve,
         }
+
+    def _simulate_rollover_cost(self, current_price: float, quantity: int) -> float:
+        """Simple but realistic Nifty futures rollover cost simulation."""
+        lots = max(1, quantity // self.cost_model.config.lot_size)
+        # Typical Nifty roll cost: 0.5 - 2 points spread + commissions
+        roll_spread_points = 1.0
+        roll_commission = self.cost_model.config.brokerage_per_order * 2 * lots
+        return (roll_spread_points * self.cost_model.config.lot_size * lots) + roll_commission

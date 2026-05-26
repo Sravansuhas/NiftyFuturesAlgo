@@ -7,6 +7,15 @@ from config import KITE_API_KEY, KITE_ACCESS_TOKEN
 from .state_machine import state_machine, SystemState
 from .risk_gatekeeper import risk_gatekeeper
 from .audit_logger import audit_logger
+from .paper_trading_params import PaperTradingParams, DEFAULT_PAPER_PARAMS
+from .diagnostics import (
+    log_signal_rejected,
+    log_signal_accepted,
+    log_ltp_issue,
+    log_risk_block,
+)
+from .trade_ledger import trade_ledger
+from .state_persistence import save_strategy_state, load_strategy_state, clear_strategy_state
 
 
 class DataFeedError(Exception):
@@ -57,14 +66,21 @@ class BaseStrategy(ABC):
             time.sleep(5)
 
     def run_once(self):
-        """Single iteration of the strategy decision loop. Safe for external drivers (main.py)."""
+        """Clean single iteration for paper/live use.
+        
+        Strategy only decides direction. All order placement and state updates
+        go through the Risk Gatekeeper (single source of truth).
+        """
+        # Always prefer the gatekeeper's view of reality
         if risk_gatekeeper.is_flat():
             if self.should_enter_long():
-                self._enter("BUY")
+                self._place_order("BUY")
             elif self.should_enter_short():
-                self._enter("SELL")
-        elif self.should_exit():
-            self._exit()
+                self._place_order("SELL")
+        else:
+            # We have a position according to the gatekeeper
+            if self.should_exit():
+                self._place_order_exit()
 
     def _initialize_nifty_future(self):
         """Select the front-month active Nifty futures contract dynamically."""
@@ -122,7 +138,7 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
     """
 
     def __init__(self, kite: KiteConnect, profit_target: float = 25.0, stop_loss: float = 15.0,
-                 vol_confirmation: bool = True):
+                 vol_confirmation: bool = True, paper_params: PaperTradingParams = None):
         super().__init__(kite)
         self.has_entered_today = False
         self.prev_high = 0.0
@@ -138,9 +154,34 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
         self._current_candle = {"start_ts": 0, "high": 0.0, "low": 0.0, "open": 0.0}
         self.vol_confirmation = vol_confirmation
         self._last_day = None
+        self.trades_today = 0
+        self.last_trade_time = 0.0          # for cooldown
+
+        # ATR state for live adaptive logic
+        self.current_atr = 0.0              # Short-term ATR (14)
+        self._tr_values = []                # For short-term ATR
+
+        self.long_term_atr = 0.0            # Longer-term ATR (~50)
+        self._long_tr_values = []           # For regime detection
+
+        # For trend / higher timeframe bias (lightweight)
+        self._ema_values = []
+        self._price_history = []
+
+        # Paper trading specific parameters
+        self.paper_params = paper_params or DEFAULT_PAPER_PARAMS
+
         # Seed as soon as we have symbol
         self._initialize_nifty_future()
         self._seed_previous_candle()
+
+        # Attempt to restore critical state from previous run (for restart reliability)
+        persisted = load_strategy_state()
+        if persisted and risk_gatekeeper.get_position_quantity() != 0:
+            self.entry_price = persisted.get("entry_price", 0.0)
+            self._entry_time = persisted.get("entry_time", time.time())
+            self._best_price_in_trade = persisted.get("best_price", self.entry_price)
+            print("[STRATEGY] Restored position context from previous session.")
 
     def _seed_previous_candle(self):
         """Seed prev_high/low/volume from the most recent completed 5min candle via historical data.
@@ -171,6 +212,20 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                 self.prev_volume = int(prev.get("volume", 100000))
                 self._last_seed_time = time.time()
                 print(f"✅ Seeded previous candle: H={self.prev_high:.2f} L={self.prev_low:.2f} V={self.prev_volume}")
+
+                # Bootstrap ATR from historical candles (fixes the "ATR = 0 for first 70 mins" problem)
+                trs = []
+                for i in range(1, min(len(candles), 20)):
+                    high = float(candles[-i].get("high", 0))
+                    low = float(candles[-i].get("low", 0))
+                    prev_close = float(candles[-i-1].get("close", candles[-i].get("close", 0))) if i+1 < len(candles) else float(candles[-i].get("close", 0))
+                    tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                    trs.append(tr)
+                if trs:
+                    self._tr_values = trs[-14:]  # keep up to 14
+                    self.current_atr = sum(self._tr_values) / len(self._tr_values)
+                    print(f"✅ Bootstrapped Live ATR from history: {self.current_atr:.2f}")
+
             else:
                 print("⚠️ Insufficient historical candles for seeding previous candle (using conservative defaults)")
                 self.prev_high = self._last_known_price + 15 if self._last_known_price else 0
@@ -181,103 +236,430 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
             self.prev_low = 0.0
 
     def _roll_previous_candle_if_needed(self, current_price: float):
-        """Simple time-based candle roller using wall clock 5min buckets.
-        In production replace with proper tick aggregation or websocket candles.
-        """
+        """Time-based 5-min candle roller + ATR calculation."""
         now = time.time()
         bucket = int(now // 300) * 300
+
         if self._current_candle["start_ts"] == 0:
             self._current_candle = {"start_ts": bucket, "open": current_price, "high": current_price, "low": current_price}
             return
 
         if bucket > self._current_candle["start_ts"]:
-            # Roll
+            # Calculate True Range
+            prev_close = self._current_candle["open"]
+            tr = max(
+                self._current_candle["high"] - self._current_candle["low"],
+                abs(self._current_candle["high"] - prev_close),
+                abs(self._current_candle["low"] - prev_close)
+            )
+
+            # Short-term ATR (14)
+            self._tr_values.append(tr)
+            if len(self._tr_values) > 14:
+                self._tr_values.pop(0)
+            self.current_atr = sum(self._tr_values) / len(self._tr_values) if self._tr_values else tr
+
+            # Long-term ATR (50) for regime detection
+            self._long_tr_values.append(tr)
+            if len(self._long_tr_values) > 50:
+                self._long_tr_values.pop(0)
+            self.long_term_atr = sum(self._long_tr_values) / len(self._long_tr_values) if self._long_tr_values else self.current_atr
+
+            # Roll previous candle
             if self._current_candle["high"] > 0:
                 self.prev_high = self._current_candle["high"]
                 self.prev_low = self._current_candle["low"]
-                self.prev_volume = max(self.prev_volume, 80000)  # conservative if no real vol
+                self.prev_volume = max(self.prev_volume, 80000)
+
             self._current_candle = {"start_ts": bucket, "open": current_price, "high": current_price, "low": current_price}
             self._last_candle_update = now
-            # Re-seed from history occasionally for accurate volume
-            if now - self._last_seed_time > 900:  # every 15min
+
+            if now - self._last_seed_time > 900:
                 self._seed_previous_candle()
 
+    def _update_atr_and_ema_for_live(self, current_price: float):
+        """Lightweight update for EMA and price history used by regime detection."""
+        self._price_history.append(current_price)
+        if len(self._price_history) > 50:
+            self._price_history.pop(0)
+
+        if len(self._price_history) >= 5:
+            ema = self._price_history[-1]
+            k = 2 / (20 + 1)
+            for p in self._price_history[-20:]:
+                ema = p * k + ema * (1 - k)
+            self._ema_values.append(ema)
+            if len(self._ema_values) > 20:
+                self._ema_values.pop(0)
+
     def _update_daily_flags(self):
-        """Reset per-day state (has_entered_today) on new trading day."""
+        """Reset any strategy-level daily flags. 
+        Note: The authoritative trade count lives in risk_gatekeeper.
+        """
         today = datetime.date.today()
         if self._last_day != today:
-            self.has_entered_today = False
+            self.has_entered_today = False   # legacy flag, kept for compatibility
+            self.trades_today = 0
             self._last_day = today
-            print(f"[STRATEGY] New trading day detected → has_entered_today reset")
+            # We no longer print here to avoid noise; main loop handles daily reset logging
+            pass
+
+    def get_volatility_regime(self) -> str:
+        """
+        Lightweight volatility regime detection.
+        Returns: 'low', 'normal', or 'high'
+        """
+        if self.long_term_atr < 1.0 or self.current_atr < 1.0:
+            return "normal"
+
+        ratio = self.current_atr / self.long_term_atr
+
+        if ratio < 0.65:
+            return "low"
+        elif ratio > 1.45:
+            return "high"
+        else:
+            return "normal"
+
+    def get_trend_regime(self) -> str:
+        """
+        Very lightweight trend regime using price vs EMA + recent structure.
+        Returns: 'uptrend', 'downtrend', 'ranging'
+        """
+        if len(self._ema_values) < 5 or len(self._price_history) < 10:
+            return "ranging"
+
+        ema = self._ema_values[-1]
+        current = self._price_history[-1]
+
+        # Simple direction
+        if current > ema * 1.002:
+            # Check if making higher highs recently
+            recent_highs = [p for p in self._price_history[-5:]]
+            if max(recent_highs) == recent_highs[-1]:
+                return "uptrend"
+        elif current < ema * 0.998:
+            recent_lows = [p for p in self._price_history[-5:]]
+            if min(recent_lows) == recent_lows[-1]:
+                return "downtrend"
+
+        return "ranging"
+
+    def get_market_regime(self) -> dict:
+        """Combined regime view for decision making."""
+        return {
+            "volatility": self.get_volatility_regime(),
+            "trend": self.get_trend_regime(),
+            "htf_bias": self.get_higher_timeframe_bias()
+        }
+
+    def get_higher_timeframe_bias(self, lookback: int = 20) -> str:
+        """
+        Simple higher timeframe bias using the existing EMA.
+        Returns: 'bullish', 'bearish', or 'neutral'
+        """
+        if len(self._ema_values) < lookback:
+            return "neutral"
+
+        ema = self._ema_values[-1]
+        price = self._price_history[-1]
+
+        # Stronger bias detection
+        if price > ema * 1.003:
+            return "bullish"
+        elif price < ema * 0.997:
+            return "bearish"
+        else:
+            return "neutral"
+
+    def get_risk_multiplier(self) -> float:
+        """
+        Suggests a risk adjustment based on current regime.
+        Used by RiskGatekeeper or strategy for adaptive sizing.
+        """
+        vol = self.get_volatility_regime()
+        trend = self.get_trend_regime()
+
+        multiplier = 1.0
+
+        if vol == "high":
+            multiplier *= 0.65          # Reduce risk significantly in high vol
+        elif vol == "low":
+            multiplier *= 0.85          # Slightly more conservative in dead markets
+
+        if trend == "ranging":
+            multiplier *= 0.75          # Be very selective in ranging markets
+
+        return max(0.4, min(1.2, multiplier))  # Safety bounds
 
     def should_enter_long(self) -> bool:
+        """God-level decision function with ATR awareness + cooldown."""
         self._update_daily_flags()
-        if self.has_entered_today or self._is_edge_case():
+
+        if self._is_edge_case():
+            log_signal_rejected("edge_case_filter")
             return False
+
+        if risk_gatekeeper.trades_today >= self.paper_params.max_trades_per_day:
+            log_signal_rejected("max_trades_per_day_reached", {"trades_today": risk_gatekeeper.trades_today})
+            return False
+
+        # Cooldown after recent trade
+        if time.time() - self.last_trade_time < (self.paper_params.cooldown_minutes_after_trade * 60):
+            log_signal_rejected("cooldown_active")
+            return False
+
+        if not risk_gatekeeper.can_place_order(is_exit=False):
+            log_signal_rejected("risk_gatekeeper_denied_entry")
+            return False
+
         current_price = self._get_current_price()
         if current_price <= 0:
+            log_signal_rejected("invalid_price")
             return False
+
         self._roll_previous_candle_if_needed(current_price)
+        self._update_atr_and_ema_for_live(current_price)   # ensure EMA/price history for regime
+
+        # Minimum volatility filter
+        if self.current_atr < self.paper_params.min_atr_points:
+            if int(time.time()) % 30 == 0:
+                log_signal_rejected("insufficient_volatility", {"current_atr": round(self.current_atr, 2)})
+            return False
+
         current_volume = self._get_current_volume()
-        vol_ok = (not self.vol_confirmation) or (self.prev_volume == 0) or (current_volume > self.prev_volume * 1.10)
-        if self.prev_high > 0 and current_price > self.prev_high + 6 and vol_ok:
-            self.has_entered_today = True
-            print(f"📈 LONG BREAKOUT TRIGGERED → {current_price:.2f} > prevH {self.prev_high:.2f} (vol_ok={vol_ok})")
-            return True
-        return False
+        vol_ok = (not self.vol_confirmation) or (self.prev_volume == 0) or (current_volume > self.prev_volume * self.paper_params.volume_mult)
+
+        # Dynamic breakout buffer
+        if self.paper_params.use_atr_breakout and self.current_atr > 0:
+            breakout_buffer = self.current_atr * self.paper_params.breakout_atr_mult
+        else:
+            breakout_buffer = self.paper_params.breakout_buffer_points
+
+        # Regime-aware logic
+        market_regime = self.get_market_regime()
+        risk_mult = self.get_risk_multiplier()
+        htf_bias = market_regime["htf_bias"]
+
+        # Adjust breakout requirement based on regime
+        if market_regime["volatility"] == "high":
+            breakout_buffer *= 1.30
+        elif market_regime["volatility"] == "low":
+            breakout_buffer *= 0.85
+
+        if market_regime["trend"] == "ranging":
+            breakout_buffer *= 1.15
+
+        # Higher Timeframe Bias Filter (important for robustness)
+        # In should_enter_long
+        if htf_bias == "bearish":
+            breakout_buffer *= 1.35  # Make it harder to go long against HTF bias
+
+        if not (self.prev_high > 0 and current_price > self.prev_high + breakout_buffer and vol_ok):
+            log_signal_rejected("long_breakout_not_met", {
+                "current": round(current_price, 2),
+                "prev_high": round(self.prev_high, 2),
+                "buffer": round(breakout_buffer, 2),
+                "vol_ok": vol_ok,
+                "atr": round(self.current_atr, 2),
+                "regime": market_regime,
+                "risk_mult": round(risk_mult, 2)
+            })
+            return False
+
+        log_signal_accepted("LONG", current_price, {
+            "buffer": round(breakout_buffer, 2),
+            "vol_ok": vol_ok,
+            "atr": round(self.current_atr, 2),
+            "regime": market_regime,
+            "risk_mult": round(risk_mult, 2)
+        })
+
+        trade_ledger.record("signal.accepted", {
+            "side": "LONG",
+            "price": current_price,
+            "atr": round(self.current_atr, 2),
+            "buffer": round(breakout_buffer, 2),
+            "vol_ok": vol_ok,
+            "regime": market_regime,
+            "suggested_risk_mult": round(risk_mult, 2)
+        })
+        return True
 
     def should_enter_short(self) -> bool:
+        """God-level decision function with ATR awareness + cooldown."""
         self._update_daily_flags()
-        if self.has_entered_today or self._is_edge_case():
+
+        if self._is_edge_case():
+            log_signal_rejected("edge_case_filter")
             return False
+
+        if risk_gatekeeper.trades_today >= self.paper_params.max_trades_per_day:
+            log_signal_rejected("max_trades_per_day_reached", {"trades_today": risk_gatekeeper.trades_today})
+            return False
+
+        if time.time() - self.last_trade_time < (self.paper_params.cooldown_minutes_after_trade * 60):
+            log_signal_rejected("cooldown_active")
+            return False
+
+        if not risk_gatekeeper.can_place_order(is_exit=False):
+            log_signal_rejected("risk_gatekeeper_denied_entry")
+            return False
+
         current_price = self._get_current_price()
         if current_price <= 0:
+            log_signal_rejected("invalid_price")
             return False
+
         self._roll_previous_candle_if_needed(current_price)
+        self._update_atr_and_ema_for_live(current_price)
+
+        if self.current_atr < self.paper_params.min_atr_points:
+            if int(time.time()) % 30 == 0:
+                log_signal_rejected("insufficient_volatility", {"current_atr": round(self.current_atr, 2)})
+            return False
+
         current_volume = self._get_current_volume()
-        vol_ok = (not self.vol_confirmation) or (self.prev_volume == 0) or (current_volume > self.prev_volume * 1.10)
-        if self.prev_low > 0 and current_price < self.prev_low - 6 and vol_ok:
-            self.has_entered_today = True
-            print(f"📉 SHORT BREAKOUT TRIGGERED → {current_price:.2f} < prevL {self.prev_low:.2f} (vol_ok={vol_ok})")
-            return True
-        return False
+        vol_ok = (not self.vol_confirmation) or (self.prev_volume == 0) or (current_volume > self.prev_volume * self.paper_params.volume_mult)
+
+        if self.paper_params.use_atr_breakout and self.current_atr > 0:
+            breakout_buffer = self.current_atr * self.paper_params.breakout_atr_mult
+        else:
+            breakout_buffer = self.paper_params.breakout_buffer_points
+
+        market_regime = self.get_market_regime()
+        risk_mult = self.get_risk_multiplier()
+
+        if market_regime["volatility"] == "high":
+            breakout_buffer *= 1.30
+        elif market_regime["volatility"] == "low":
+            breakout_buffer *= 0.85
+
+        if market_regime["trend"] == "ranging":
+            breakout_buffer *= 1.15
+
+        # Higher Timeframe Bias Filter for shorts
+        if htf_bias == "bullish":
+            breakout_buffer *= 1.35
+
+        if not (self.prev_low > 0 and current_price < self.prev_low - breakout_buffer and vol_ok):
+            log_signal_rejected("short_breakout_not_met", {
+                "current": round(current_price, 2),
+                "prev_low": round(self.prev_low, 2),
+                "buffer": round(breakout_buffer, 2),
+                "vol_ok": vol_ok,
+                "atr": round(self.current_atr, 2),
+                "regime": market_regime,
+                "risk_mult": round(risk_mult, 2)
+            })
+            return False
+
+        log_signal_accepted("SHORT", current_price, {
+            "buffer": round(breakout_buffer, 2),
+            "vol_ok": vol_ok,
+            "atr": round(self.current_atr, 2),
+            "regime": market_regime,
+            "risk_mult": round(risk_mult, 2)
+        })
+
+        trade_ledger.record("signal.accepted", {
+            "side": "SHORT",
+            "price": current_price,
+            "atr": round(self.current_atr, 2),
+            "buffer": round(breakout_buffer, 2),
+            "vol_ok": vol_ok,
+            "regime": market_regime,
+            "suggested_risk_mult": round(risk_mult, 2)
+        })
+        return True
 
     def should_exit(self) -> bool:
-        # Prefer risk_gatekeeper as source of truth for live position
+        """
+        Professional multi-condition exit logic.
+        Designed to protect capital and capture profit across different market conditions.
+        """
         if risk_gatekeeper.is_flat():
-            self.position = 0
-            self.entry_price = 0.0
             return False
-        # Sync local view
-        self.position = risk_gatekeeper.get_position_quantity()
-        if self.position == 0 or self.entry_price == 0:
-            return False
+
         current_price = self._get_current_price()
         if current_price <= 0:
             return False
-        pnl = (current_price - self.entry_price) * (1 if self.position > 0 else -1)
+
+        if self.entry_price == 0:
+            return False
+
+        is_long = risk_gatekeeper.is_long()
+        pnl = (current_price - self.entry_price) * (1 if is_long else -1)
+        atr = max(self.current_atr, 8.0)  # safety floor
+
+        # 1. Hard Profit Target
         if pnl >= self.profit_target:
             print(f"🎯 PROFIT TARGET HIT (+{pnl:.2f})")
             return True
+
+        # 2. Hard Stop Loss
         if pnl <= -self.stop_loss:
             print(f"🛑 STOP LOSS HIT ({pnl:.2f})")
             return True
+
+        # 3. Breakeven + Trailing Stop (ATR based)
+        # Once we have +1.2R, move stop to breakeven + small buffer
+        if pnl > abs(self.stop_loss) * 1.2:
+            # Simple trailing stop: trail by 1.5 ATR behind the best price seen
+            if not hasattr(self, '_best_price_in_trade'):
+                self._best_price_in_trade = self.entry_price
+
+            if is_long:
+                self._best_price_in_trade = max(self._best_price_in_trade, current_price)
+                trail_stop = self._best_price_in_trade - (1.5 * atr)
+                if current_price < trail_stop:
+                    print(f"📉 Trailing Stop hit (Long). PnL: {pnl:.2f}")
+                    return True
+            else:
+                self._best_price_in_trade = min(self._best_price_in_trade, current_price)
+                trail_stop = self._best_price_in_trade + (1.5 * atr)
+                if current_price > trail_stop:
+                    print(f"📉 Trailing Stop hit (Short). PnL: {pnl:.2f}")
+                    return True
+
+        # 4. Time-based Exit (avoid sitting forever)
+        time_in_trade = time.time() - getattr(self, '_entry_time', time.time())
+        max_hold_seconds = 90 * 60
+
+        if time_in_trade > max_hold_seconds and pnl < self.profit_target * 0.4:
+            print(f"⏰ Time-based exit after {int(time_in_trade/60)} min. PnL: {pnl:.2f}")
+            return True
+
         return False
 
     def _is_edge_case(self) -> bool:
-        """Conservative entry filters: first 15min + near expiry days + holidays (via calendar)."""
+        """Conservative entry filters using proper calendar helpers + paper params."""
         try:
-            from .market_calendar import is_entry_window_open, is_market_open
-            now = datetime.datetime.now()
-            if not is_market_open(now) or not is_entry_window_open(now):
+            # Use absolute import to be robust when running as script or in Docker
+            from app.market_calendar import is_market_open, now_ist, is_expiry_day
+            now = now_ist()
+
+            # Session filter from paper params
+            if now.time() < self.paper_params.session_start or now.time() > self.paper_params.session_end:
+                log_signal_rejected("outside_paper_session", {
+                    "current_time": str(now.time()),
+                    "allowed": f"{self.paper_params.session_start} - {self.paper_params.session_end}"
+                })
                 return True
-            # Caution on expiry day (Nifty FUT expiry usually last Thu of month)
-            if now.weekday() == 3:  # Thursday
-                if now.day >= 25 or (now.day >= 22 and now.month in (2, 4, 6, 9, 11)):  # rough last Thu
-                    if now.hour >= 14:  # no new entries late on expiry
+
+            if not is_market_open(now):
+                log_signal_rejected("market_closed")
+                return True
+
+            # Expiry day handling
+            if self.paper_params.avoid_expiry_day:
+                if is_expiry_day(now.date()):
+                    if now.hour >= self.paper_params.expiry_day_cutoff_hour:
+                        log_signal_rejected("expiry_day_safety", {"hour": now.hour})
                         return True
-        except Exception:
-            pass
+
+        except Exception as e:
+            log_signal_rejected("calendar_check_failed", {"error": str(e)})
         return False
 
     def _get_current_price(self) -> float:
@@ -295,12 +677,12 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
         except Exception as e:
             self._ltp_warning_count += 1
             is_live = state_machine.get_state() == SystemState.LIVE_MODE
+            log_ltp_issue(str(e), self.symbol or "NIFTY")
             if is_live:
-                # Explicit failure in live - do not hallucinate price
                 audit_logger.record("data.ltp_failed_live", {"symbol": self.symbol, "error": str(e)})
                 print(f"🚨 LTP FAILED IN LIVE_MODE: {e} — trading paused for safety")
                 raise DataFeedError(f"Live LTP unavailable for {self.symbol}: {e}") from e
-            # Paper / dry-run only: limited simulation to keep demo running
+            # Paper / dry-run only
             if self._ltp_warning_count % 10 == 1:
                 print(f"⚠️ LTP failed (PAPER), using last-known + jitter: {e}")
             jitter = random.uniform(-25, 30)
@@ -315,54 +697,97 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
             return max(int(self.prev_volume * 0.8), 70000)
         return 120000  # safe neutral default when no history
 
-    # --- Order execution now goes through risk (dynamic sizing, full guards) ---
-    def _enter(self, side: str):
+    def _place_order(self, side: str):
+        """Place an entry order through the Risk Gatekeeper with regime-aware sizing."""
         if not self.kite or not self.symbol:
-            print("Cannot enter: missing kite or symbol")
+            log_signal_rejected("missing_kite_or_symbol")
             return
-        # Dynamic risk-based sizing (respects consecutive loss reduction, max lots etc)
+
         try:
-            # Use a conservative stop distance based on strategy SL for sizing calc
-            stop_distance = self.stop_loss + 5.0  # buffer
-            qty = risk_gatekeeper.calculate_order_quantity(
+            stop_distance = max(8.0, self.stop_loss)
+            base_qty = risk_gatekeeper.calculate_order_quantity(
                 entry_price=self._last_known_price or 24500.0,
-                stop_price=(self._last_known_price or 24500.0) - stop_distance if side == "BUY" else (self._last_known_price or 24500.0) + stop_distance
+                stop_price=(self._last_known_price or 24500.0) - stop_distance if side == "BUY" 
+                else (self._last_known_price or 24500.0) + stop_distance
             )
+
+            # Apply regime-based risk adjustment
+            risk_mult = self.get_risk_multiplier()
+            adjusted_qty = int(base_qty * risk_mult)
+            # Ensure lot alignment
+            lot_size = risk_gatekeeper.config.lot_size
+            adjusted_qty = max(lot_size, (adjusted_qty // lot_size) * lot_size)
+
+            qty = adjusted_qty
         except Exception:
-            qty = 75  # ultimate fallback 1 lot
+            qty = 75
 
         result = risk_gatekeeper.place_guarded_order(
             kite=self.kite,
             symbol=self.symbol,
             quantity=qty,
             transaction_type=side,
-            is_exit=False,
-            # force_dry_run removed — respect the global FORCE_DRY_RUN + risk gates
+            is_exit=False
         )
+
         if result.get("success"):
-            self.position = qty if side == "BUY" else -qty
-            self.entry_price = result.get("price") or self._last_known_price or 0.0
-            print(f"✅ {side} Entry @ ~{self.entry_price:.2f} qty={qty} → {result.get('order_id')}")
+            self.last_trade_time = time.time()
+            self._entry_time = time.time()
+            self._best_price_in_trade = self._last_known_price or current_price
+
+            print(f"✅ {side} order submitted via Gatekeeper | qty={qty} | {result.get('order_id')}")
+
+            trade_ledger.record("order.placed", {
+                "side": side,
+                "quantity": qty,
+                "price": self._last_known_price,
+                "order_id": result.get("order_id"),
+                "dry_run": result.get("dry_run", True)
+            })
+
+            # Persist critical state for restart reliability
+            save_strategy_state({
+                "entry_price": self.entry_price,
+                "entry_time": self._entry_time,
+                "best_price": getattr(self, "_best_price_in_trade", self.entry_price),
+                "symbol": self.symbol
+            })
         else:
-            print(f"❌ Entry blocked: {result.get('message')}")
+            log_risk_block(result.get("message", "unknown"), {"side": side, "qty": qty})
 
-    def _exit(self):
-        if self.position == 0:
+    def _place_order_exit(self):
+        """Exit the current position through the Risk Gatekeeper."""
+        if risk_gatekeeper.is_flat():
             return
-        side = "SELL" if self.position > 0 else "BUY"
-        qty = abs(self.position)
+
+        position_qty = risk_gatekeeper.get_position_quantity()
+        if position_qty == 0:
+            return
+
+        side = "SELL" if position_qty > 0 else "BUY"
+        qty = abs(position_qty)
+
         result = risk_gatekeeper.place_guarded_order(
             kite=self.kite,
             symbol=self.symbol,
             quantity=qty,
             transaction_type=side,
-            is_exit=True,
+            is_exit=True
         )
+
         if result.get("success"):
-            print(f"✅ Exit Executed → {result.get('order_id')}")
-            self.position = 0
-            self.entry_price = 0.0
-        # Note: actual position zeroing happens via broker recon in main loop
+            self.last_trade_time = time.time()
+            print(f"✅ Exit order submitted via Gatekeeper | {result.get('order_id')}")
+
+            trade_ledger.record("order.exit", {
+                "side": side,
+                "quantity": qty,
+                "order_id": result.get("order_id")
+            })
+
+            clear_strategy_state()  # Position closed, no need to persist context
+        else:
+            log_risk_block(result.get("message", "unknown"), {"side": side, "qty": qty})
 
 
 if __name__ == "__main__":

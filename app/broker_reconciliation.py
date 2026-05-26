@@ -13,7 +13,7 @@ class BrokerReconciliation:
         self.last_check = time.time()
         self.consecutive_failures = 0
         self.max_consecutive_failures = 3
-        print("Broker Reconciliation Service initialized")
+        # Silent init — reconciliation runs periodically
 
     def run_reconciliation(self):
         """Check Zerodha order/position state against internal state."""

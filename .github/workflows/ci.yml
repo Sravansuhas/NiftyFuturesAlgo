@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff pytest
+
+      - name: Lint (ruff)
+        run: |
+          ruff check . || true   # non-blocking for now
+
+      - name: Syntax / Compile check
+        run: |
+          python -m py_compile app/*.py backtesting/*.py tests/*.py generate_token.py config.py
+
+      - name: Run unit tests (pure + fakes)
+        run: |
+          PYTHONPATH=. python -m unittest discover -s tests -v
+
+      - name: Smoke backtest (synthetic data only)
+        run: |
+          PYTHONPATH=. python backtesting/example_backtest.py

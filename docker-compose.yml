@@ -36,20 +36,28 @@ services:
 
   trading-app:
     build: .
-    container_name: trading-app
+    container_name: nifty-trader
     env_file:
       - .env
+    environment:
+      # This helps make the mode obvious in logs
+      - TRADING_MODE=${TRADING_MODE:-paper}
     ports:
       - "5000:5000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy  
+        condition: service_healthy
     volumes:
-      # Full bind for development so root config.py + app package are both visible
+      # Full bind for development (code changes are reflected live)
       - .:/app
     restart: unless-stopped
+    # Tip: For fast paper trading with clear mode, prefer:
+#   docker-compose -f docker-compose.paper.yml up --build
+#
+# This file (docker-compose.yml) starts extra services (Postgres + Redis).
+# Use it only if you need those services.
 
 volumes:
   postgres_data:

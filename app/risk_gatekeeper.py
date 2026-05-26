@@ -7,6 +7,7 @@ from kiteconnect import KiteConnect
 
 from .audit_logger import audit_logger
 from .state_machine import SystemState, state_machine
+from .alerts import alert_manager
 
 
 @dataclass(frozen=True)
@@ -377,17 +378,9 @@ class RiskGatekeeper:
             print(f"Position: {direction} {qty} @ Rs {avg:,.2f} ({symbol})")
 
     def print_startup_status(self):
-        print("\n" + "=" * 50)
-        print("RISK GATEKEEPER STARTUP STATUS")
-        print("=" * 50)
-        print(f"Capital               : Rs {self.capital:,.0f}")
-        print(f"Max Daily Loss Limit  : {self.config.max_daily_loss_pct * 100}%")
-        print(f"Max Drawdown Limit    : {self.config.max_drawdown_pct * 100}%")
-        print(f"Risk Per Trade        : {self.config.risk_per_trade_pct * 100}%")
-        print(f"Force Dry Run         : {self.config.force_dry_run}")
-        print(f"Current Position      : {self.position['quantity']} {self.position['symbol'] or ''}")
-        print(f"Daily Loss So Far     : Rs {self.daily_loss:,.2f}")
-        print("=" * 50 + "\n")
+        # Calm startup — only essential one-liner. Full details available in dashboard.
+        force_dry = " (FORCE_DRY_RUN)" if self.config.force_dry_run else ""
+        print(f"[RISK] Gatekeeper ready — Capital ₹{int(self.capital):,}{force_dry}")
 
     def check_all_gates(self) -> bool:
         if not state_machine.is_trading_allowed():
@@ -396,15 +389,24 @@ class RiskGatekeeper:
 
         if self.daily_loss >= self.config.max_daily_loss_pct * self.capital:
             print("Gate 2 FAILED: Daily loss limit reached")
+            alert_manager.send("CRITICAL", "Daily loss limit breached", {
+                "daily_loss": self.daily_loss,
+                "limit": self.config.max_daily_loss_pct * self.capital
+            })
             state_machine.set_state(SystemState.TRADING_DISABLED)
             return False
 
         if self._current_drawdown_pct() >= self.config.max_drawdown_pct:
             print("Gate 3 FAILED: Max drawdown reached")
+            alert_manager.send("CRITICAL", "Max drawdown limit breached", {
+                "drawdown": round(self._current_drawdown_pct() * 100, 2),
+                "limit": self.config.max_drawdown_pct * 100
+            })
             state_machine.set_state(SystemState.CIRCUIT_BREAKER_TRIGGERED)
             return False
 
-        print("ALL RISK GATES PASSED")
+        # Only log success occasionally to reduce noise (dashboard shows real-time state)
+        # Success is the normal state — we only care about failures
         return True
 
     def update_daily_loss(self, realized_pnl: float):

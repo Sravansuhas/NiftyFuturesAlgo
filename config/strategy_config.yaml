@@ -1,0 +1,49 @@
+# Strategy Configuration for NiftyFuturesAlgo
+# This file allows clean external configuration of the trading strategy.
+
+# Paper / Live Trading Parameters
+paper_trading:
+  session_start: "09:45"
+  session_end: "15:10"
+  
+  # Breakout settings
+  use_atr_breakout: true
+  breakout_atr_mult: 0.78
+  breakout_buffer_points: 10.0          # fallback
+  min_atr_points: 6.0
+
+  # Volume
+  volume_confirmation: true
+  volume_mult: 1.10
+
+  # Exits
+  profit_target: 22.0
+  stop_loss: 12.0
+  use_atr_exits: true
+  profit_target_atr_mult: 2.1
+  stop_loss_atr_mult: 1.1
+
+  # Risk & Frequency
+  risk_per_trade_pct: 0.0035
+  max_trades_per_day: 3
+  cooldown_minutes_after_trade: 12
+
+  # Safety
+  avoid_expiry_day: true
+  expiry_day_cutoff_hour: 12
+
+  use_trend_filter: false
+
+# Risk Parameters (overrides defaults in RiskGatekeeper if needed)
+risk:
+  capital: 1000000
+  max_daily_loss_pct: 0.02
+  max_drawdown_pct: 0.08
+  risk_per_trade_pct: 0.0035
+  lot_size: 75
+  max_lots: 4
+
+# Backtesting / Validation defaults
+backtest:
+  default_cost_per_lot: 75
+  default_slippage_points: 4.0

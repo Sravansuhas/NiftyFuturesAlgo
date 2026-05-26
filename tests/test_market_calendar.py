@@ -35,11 +35,18 @@ class MarketCalendarTests(unittest.TestCase):
         self.assertFalse(is_market_open(at))
 
     def test_expiry_day_detection(self):
-        # 28 May 2026 is a Thursday — check if our approx marks near last Thu
-        from market_calendar import is_expiry_day
+        from app.market_calendar import is_expiry_day
         d = datetime.date(2026, 5, 28)
-        # The heuristic may or may not exactly match every month; we mainly test it doesn't crash
         self.assertIsInstance(is_expiry_day(d), bool)
+
+    def test_safe_trading_window(self):
+        from app.market_calendar import is_safe_trading_window
+        # Inside safe window
+        at = datetime.datetime(2026, 5, 4, 11, 0, tzinfo=IST)
+        self.assertTrue(is_safe_trading_window(at))
+        # Too early
+        at_early = datetime.datetime(2026, 5, 4, 9, 20, tzinfo=IST)
+        self.assertFalse(is_safe_trading_window(at_early))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,47 @@
+MIT License with Trading System Disclaimer
+
+Copyright (c) 2025 Sravansuhas and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+IMPORTANT TRADING SYSTEM DISCLAIMER (NOT LEGAL ADVICE)
+================================================================================
+
+This repository contains algorithmic trading software for Nifty futures
+on Indian exchanges via Zerodha Kite Connect.
+
+1. This is experimental research software. It is NOT production trading
+   infrastructure.
+2. Trading futures and options involves substantial risk of loss and is not
+   suitable for all investors. Past performance (backtest or paper) is not
+   indicative of future results.
+3. The authors and contributors accept ZERO liability for any financial loss,
+   including but not limited to losses from bugs, incorrect assumptions,
+   broker outages, regulatory changes, or misuse of this code.
+4. Before using any part of this system with real capital (even micro size):
+   - Perform your own independent validation over multiple market regimes.
+   - Conduct extended paper trading with live data and real reconciliation.
+   - Have the full system reviewed by a qualified compliance / risk professional.
+   - Understand every line of code that can place or influence orders.
+5. The "do not use real capital" warnings in the README are not boilerplate.
+   They are the result of painful real-world experience with algo trading systems.
+
+Use at your own extreme risk. Or better yet — don't, until you have the
+statistical power and operational maturity to justify it.
