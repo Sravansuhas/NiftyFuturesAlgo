@@ -1,5 +1,6 @@
 import os
 import time
+import logging
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -8,6 +9,8 @@ from kiteconnect import KiteConnect
 from .audit_logger import audit_logger
 from .state_machine import SystemState, state_machine
 from .alerts import alert_manager
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -46,7 +49,8 @@ class RiskGatekeeper:
         }
 
         self.last_reconciliation_time = time.time()
-        print("RiskGatekeeper initialized (stateful position tracking active)")
+        # Startup message kept minimal for calm terminal during live hours
+        logging.getLogger(__name__).info("RiskGatekeeper initialized (stateful position tracking active)")
         self.print_startup_status()
 
     def has_open_position(self) -> bool:
@@ -112,23 +116,23 @@ class RiskGatekeeper:
 
     def can_place_order(self, is_exit: bool = False) -> bool:
         if not state_machine.is_trading_allowed():
-            print("can_place_order: Trading not allowed in current state")
+            logger.debug("can_place_order: Trading not allowed in current state")
             return False
 
         if self.daily_loss >= self.config.max_daily_loss_pct * self.capital:
-            print("can_place_order: Daily loss limit reached")
+            logger.debug("can_place_order: Daily loss limit reached")
             return False
 
         if self._current_drawdown_pct() >= self.config.max_drawdown_pct:
-            print("can_place_order: Max drawdown reached")
+            logger.debug("can_place_order: Max drawdown reached")
             return False
 
         if self.has_open_position() and not is_exit:
-            print("can_place_order: Already have an open position")
+            logger.debug("can_place_order: Already have an open position")
             return False
 
         if self.pending_orders and not is_exit:
-            print("can_place_order: Pending order exists")
+            logger.debug("can_place_order: Pending order exists")
             return False
 
         return True
@@ -152,7 +156,8 @@ class RiskGatekeeper:
             dry_run = not is_market_open()
 
         mode = "DRY RUN" if dry_run else "REAL"
-        print(f"\n[{mode}] Attempting guarded order -> {transaction_type} {quantity} {symbol}")
+        logger = logging.getLogger(__name__)
+        logger.debug(f"[{mode}] Attempting guarded order -> {transaction_type} {quantity} {symbol}")
 
         if not self.can_place_order(is_exit=is_exit):
             return self._blocked("Order blocked by risk gates", symbol, quantity, transaction_type)
@@ -211,7 +216,7 @@ class RiskGatekeeper:
                     "transaction_type": transaction_type.upper(),
                     "is_exit": is_exit,
                 })
-                print(f"[{mode}] Order submitted -> ID: {order_id}")
+                logger.debug(f"[{mode}] Order submitted -> ID: {order_id}")
                 return {
                     "success": True,
                     "order_id": order_id,
@@ -229,7 +234,7 @@ class RiskGatekeeper:
                 "transaction_type": transaction_type.upper(),
                 "error": str(exc),
             })
-            print(f"[{mode}] Order placement failed: {exc}")
+            logger.debug(f"[{mode}] Order placement failed: {exc}")
             return {
                 "success": False,
                 "order_id": None,
@@ -252,12 +257,12 @@ class RiskGatekeeper:
     def on_order_placed(self, symbol: str, quantity: int, side: str,
                         avg_price: float = 0.0, is_exit: bool = False):
         if quantity <= 0:
-            print("Invalid order quantity")
+            logger.debug("Invalid order quantity")
             return False
 
         side = side.upper()
         if side not in {"BUY", "SELL"}:
-            print(f"Invalid order side: {side}")
+            logger.debug(f"Invalid order side: {side}")
             return False
 
         current_qty = self.position.get("quantity", 0)
@@ -265,11 +270,11 @@ class RiskGatekeeper:
 
         if is_exit:
             if current_symbol != symbol:
-                print(f"Exit symbol mismatch. Current: {current_symbol}, trying to exit: {symbol}")
+                logger.debug(f"Exit symbol mismatch. Current: {current_symbol}, trying to exit: {symbol}")
                 return False
 
             if abs(quantity) > abs(current_qty):
-                print(f"Exit quantity {quantity} exceeds open position {current_qty}")
+                logger.debug(f"Exit quantity {quantity} exceeds open position {current_qty}")
                 return False
 
             if side == "SELL" and current_qty > 0:
@@ -277,7 +282,7 @@ class RiskGatekeeper:
             elif side == "BUY" and current_qty < 0:
                 self.position["quantity"] = current_qty + quantity
             else:
-                print("Invalid exit direction for current position")
+                logger.debug("Invalid exit direction for current position")
                 return False
 
             if self.position["quantity"] == 0:
@@ -288,7 +293,7 @@ class RiskGatekeeper:
             return True
 
         if current_symbol is not None and current_symbol != symbol:
-            print(f"Cannot add {symbol} while holding {current_symbol}")
+            logger.debug(f"Cannot add {symbol} while holding {current_symbol}")
             return False
 
         self.position["symbol"] = symbol
@@ -314,7 +319,7 @@ class RiskGatekeeper:
 
         if not nifty_futures_positions:
             if self.position["quantity"] != 0:
-                print("MISMATCH: Internal state has a position but broker shows FLAT")
+                logger.debug("MISMATCH: Internal state has a position but broker shows FLAT")
                 self._trigger_mismatch_alarm()
             self._reset_position()
             self.pending_orders.clear()
@@ -322,7 +327,7 @@ class RiskGatekeeper:
 
         # Edge case: multiple Nifty fut positions (rare) — net them and alarm if conflicting
         if len(nifty_futures_positions) > 1:
-            print("⚠️ MULTIPLE NIFTY FUT POSITIONS DETECTED — netting for safety")
+            logger.warning("MULTIPLE NIFTY FUT POSITIONS DETECTED — netting for safety")
             net_qty = sum(p.get("quantity", 0) for p in nifty_futures_positions)
             # Use first symbol for simplicity; in reality you may want to flatten all
             pos = nifty_futures_positions[0]
@@ -337,11 +342,11 @@ class RiskGatekeeper:
             broker_avg = pos.get("average_price", 0.0)
 
         if self.position["quantity"] != broker_qty or self.position["symbol"] != broker_symbol:
-            print("POSITION MISMATCH DETECTED")
-            print(f"   Internal: {self.position['symbol']} x {self.position['quantity']}")
-            print(f"   Broker  : {broker_symbol} x {broker_qty}")
+            logger.warning("POSITION MISMATCH DETECTED")
+            logger.debug(f"   Internal: {self.position['symbol']} x {self.position['quantity']}")
+            logger.debug(f"   Broker  : {broker_symbol} x {broker_qty}")
             if self.pending_orders:
-                print("   Pending orders exist; accepting broker as authoritative")
+                logger.debug("   Pending orders exist; accepting broker as authoritative")
             else:
                 self._trigger_mismatch_alarm()
 
@@ -369,26 +374,26 @@ class RiskGatekeeper:
 
     def print_position_status(self):
         if self.is_flat():
-            print("Position: FLAT")
+            logger.debug("Position: FLAT")
         else:
             direction = "LONG" if self.is_long() else "SHORT"
             qty = abs(self.position["quantity"])
             symbol = self.position["symbol"] or "N/A"
             avg = self.position["avg_price"]
-            print(f"Position: {direction} {qty} @ Rs {avg:,.2f} ({symbol})")
+            logger.debug(f"Position: {direction} {qty} @ Rs {avg:,.2f} ({symbol})")
 
     def print_startup_status(self):
         # Calm startup — only essential one-liner. Full details available in dashboard.
         force_dry = " (FORCE_DRY_RUN)" if self.config.force_dry_run else ""
-        print(f"[RISK] Gatekeeper ready — Capital ₹{int(self.capital):,}{force_dry}")
+        logger.info(f"Gatekeeper ready — Capital ₹{int(self.capital):,}{force_dry}")
 
     def check_all_gates(self) -> bool:
         if not state_machine.is_trading_allowed():
-            print("Gate 1 FAILED: Trading not allowed in current state")
+            logger.debug("Gate 1 FAILED: Trading not allowed in current state")
             return False
 
         if self.daily_loss >= self.config.max_daily_loss_pct * self.capital:
-            print("Gate 2 FAILED: Daily loss limit reached")
+            logger.warning("Gate 2 FAILED: Daily loss limit reached")
             alert_manager.send("CRITICAL", "Daily loss limit breached", {
                 "daily_loss": self.daily_loss,
                 "limit": self.config.max_daily_loss_pct * self.capital
@@ -397,7 +402,7 @@ class RiskGatekeeper:
             return False
 
         if self._current_drawdown_pct() >= self.config.max_drawdown_pct:
-            print("Gate 3 FAILED: Max drawdown reached")
+            logger.warning("Gate 3 FAILED: Max drawdown reached")
             alert_manager.send("CRITICAL", "Max drawdown limit breached", {
                 "drawdown": round(self._current_drawdown_pct() * 100, 2),
                 "limit": self.config.max_drawdown_pct * 100
@@ -405,8 +410,8 @@ class RiskGatekeeper:
             state_machine.set_state(SystemState.CIRCUIT_BREAKER_TRIGGERED)
             return False
 
-        # Only log success occasionally to reduce noise (dashboard shows real-time state)
-        # Success is the normal state — we only care about failures
+        # Success is the normal state — we only surface real problems.
+        # Dashboard shows the live state; terminal stays calm.
         return True
 
     def update_daily_loss(self, realized_pnl: float):
@@ -428,7 +433,7 @@ class RiskGatekeeper:
         self.peak_equity = self.capital
         self.current_equity = self.capital
         self.pending_orders.clear()
-        print("[RISK] Daily counters reset (new trading day)")
+        logger.info("Daily counters reset (new trading day)")
 
 
 risk_gatekeeper = RiskGatekeeper(capital=1_000_000.0)

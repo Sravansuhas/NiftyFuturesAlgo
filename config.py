@@ -17,7 +17,6 @@ def _required_env(name: str) -> str:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
 
-
 KITE_API_KEY = _required_env("KITE_API_KEY")
 KITE_API_SECRET = _required_env("KITE_API_SECRET")
 KITE_ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN", "")

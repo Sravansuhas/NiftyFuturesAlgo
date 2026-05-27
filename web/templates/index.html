@@ -269,7 +269,7 @@
                 
                 <div id="diagnostics-feed" 
                      class="flex-1 overflow-y-auto text-xs terminal-font space-y-1 bg-[#0a0c12] p-3 rounded-2xl border border-gray-800 text-gray-300 h-80">
-                    <!-- Real-time messages injected here -->
+                    <!-- Real-time messages injected here (populated by JS from /api/status recent_execution) -->
                 </div>
             </div>
 
@@ -278,6 +278,28 @@
                 <div class="section-title mb-2">LAST SIGNIFICANT ACTION</div>
                 <div id="last-action" class="font-mono text-sm text-emerald-300 bg-[#0a0c12] p-3 rounded-2xl border border-gray-800 min-h-[42px]">
                     Waiting for first decision...
+                </div>
+            </div>
+
+            <!-- NEW: Live Market Data Feed + Active Contract (directly addresses "dead screen / no clue") -->
+            <div class="panel rounded-3xl p-5 xl:col-span-3 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <div class="section-title mb-1">ACTIVE CONTRACT</div>
+                    <div id="active-symbol" class="font-mono text-2xl font-semibold text-emerald-300">—</div>
+                    <div class="text-xs text-gray-500">Nifty Futures (front month)</div>
+                </div>
+                <div>
+                    <div class="section-title mb-1">LIVE MARKET DATA FEED</div>
+                    <div class="flex items-baseline gap-x-2">
+                        <div id="live-ltp" class="font-mono text-3xl font-semibold">—</div>
+                        <div class="text-xs text-gray-500">LTP</div>
+                    </div>
+                    <div id="feed-status" class="text-xs text-emerald-400 mt-0.5">Polling Kite every 10s • last update —</div>
+                </div>
+                <div>
+                    <div class="section-title mb-1">LAST REGIME</div>
+                    <div id="live-regime" class="font-semibold text-lg text-amber-400">—</div>
+                    <div class="text-xs text-gray-500">vol / trend / htf bias</div>
                 </div>
             </div>
 
@@ -415,6 +437,39 @@
 
             // Timestamp
             document.getElementById('last-update').innerText = new Date(data.timestamp).toLocaleTimeString();
+
+            // === NEW: Live Market Data Feed + Active Contract (makes the screen alive) ===
+            const symEl = document.getElementById('active-symbol');
+            if (symEl) symEl.innerText = data.active_symbol || data.position?.symbol || 'NIFTY26JUNFUT (fallback)';
+
+            const ltpEl = document.getElementById('live-ltp');
+            if (ltpEl) ltpEl.innerText = (data.last_ltp != null) ? data.last_ltp.toFixed(2) : '—';
+
+            const feedEl = document.getElementById('feed-status');
+            if (feedEl) {
+                const last = data.timestamp ? new Date(data.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '—';
+                feedEl.innerText = `Polling Kite every 10s • last update ${last}`;
+            }
+
+            const regimeLive = document.getElementById('live-regime');
+            if (regimeLive) regimeLive.innerText = (data.last_regime || data.vol_regime || 'normal').toUpperCase();
+
+            // === Execution Log (diagnostics-feed) — shows WHY no trades are happening ===
+            const diag = document.getElementById('diagnostics-feed');
+            if (diag && data.recent_execution && data.recent_execution.length) {
+                // Only update if we have fresh items (avoid constant DOM churn)
+                diag.innerHTML = '';
+                data.recent_execution.slice(0, 12).forEach(item => {
+                    const time = item.ts ? new Date(item.ts * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '';
+                    const cls = item.type.includes('rejected') ? 'text-amber-400' : (item.type.includes('accepted') ? 'text-emerald-400' : 'text-gray-300');
+                    const line = document.createElement('div');
+                    line.className = `font-mono text-[10px] ${cls}`;
+                    const reason = item.reason ? ` | ${item.reason}` : '';
+                    const regime = item.regime ? ` [${item.regime}]` : '';
+                    line.textContent = `${time} ${item.type} ${item.side || ''} ${item.price ? '@'+item.price : ''}${reason}${regime}`;
+                    diag.appendChild(line);
+                });
+            }
         }
 
         // Fetch recent trades

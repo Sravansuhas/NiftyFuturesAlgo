@@ -17,6 +17,9 @@ from .diagnostics import (
 from .trade_ledger import trade_ledger
 from .state_persistence import save_strategy_state, load_strategy_state, clear_strategy_state
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class DataFeedError(Exception):
     """Raised when live market data (LTP) is unavailable in LIVE_MODE.
@@ -48,7 +51,8 @@ class BaseStrategy(ABC):
 
     def run(self):
         """Standalone infinite loop (demo / legacy). Prefer using main.py driver or run_once()."""
-        print(f"\n🚀 Strategy Started → {self.__class__.__name__} (PAPER_MODE)")
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Strategy Started → {self.__class__.__name__} (PAPER_MODE)")
         self._initialize_nifty_future()
         last_status_time = time.time()
 
@@ -59,10 +63,10 @@ class BaseStrategy(ABC):
                 if current_time - last_status_time >= 30:
                     current_price = self._get_current_price()
                     pos = "FLAT" if self.position == 0 else ("LONG" if self.position > 0 else "SHORT")
-                    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] LTP: {current_price:.2f} | Position: {pos} | Entry: {self.entry_price if self.entry_price else 'N/A'}")
+                    logger.debug(f"LTP: {current_price:.2f} | Position: {pos}")
                     last_status_time = current_time
             except Exception as e:
-                print(f"❌ Strategy Error: {e}")
+                logger.error(f"Strategy Error: {e}")
             time.sleep(5)
 
     def run_once(self):
@@ -96,9 +100,10 @@ class BaseStrategy(ABC):
             active = nifty_futures[0]
             self.symbol = active["tradingsymbol"]
             self.instrument_token = active["instrument_token"]
-            print(f"✅ Using active Nifty Future: {self.symbol} (Token: {self.instrument_token})")
+            # Active contract selection logged at DEBUG to keep terminal calm during live hours
+            logging.getLogger(__name__).debug(f"Using active Nifty Future: {self.symbol} (Token: {self.instrument_token})")
         except Exception as e:
-            print(f"⚠️ Failed to fetch active Nifty contract ({e}). Using safe fallback.")
+            logger.warning(f"Failed to fetch active Nifty contract ({e}). Using safe fallback.")
             # Fallback must be a plausible near contract; user should login for real selection
             self.symbol = "NIFTY26JUNFUT"
             self.instrument_token = None
@@ -108,7 +113,7 @@ class BaseStrategy(ABC):
         if result["success"]:
             self.position = self.quantity if side == "BUY" else -self.quantity
             self.entry_price = result.get("price", 24550.0)
-            print(f"✅ {side} Entry @ {self.entry_price} → {result.get('order_id')}")
+            logger.info(f"{side} Entry @ {self.entry_price} → {result.get('order_id')}")
 
     def _exit(self):
         if self.position == 0:
@@ -116,7 +121,7 @@ class BaseStrategy(ABC):
         side = "SELL" if self.position > 0 else "BUY"
         result = risk_gatekeeper.place_guarded_order(kite=self.kite, symbol=self.symbol, quantity=abs(self.position), transaction_type=side, is_exit=True, force_dry_run=True)
         if result["success"]:
-            print(f"✅ Exit Executed → {result.get('order_id')}")
+            logger.info(f"Exit Executed → {result.get('order_id')}")
             self.position = 0
             self.entry_price = 0.0
 
@@ -181,7 +186,7 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
             self.entry_price = persisted.get("entry_price", 0.0)
             self._entry_time = persisted.get("entry_time", time.time())
             self._best_price_in_trade = persisted.get("best_price", self.entry_price)
-            print("[STRATEGY] Restored position context from previous session.")
+            logger.debug("Restored position context from previous session.")
 
     def _seed_previous_candle(self):
         """Seed prev_high/low/volume from the most recent completed 5min candle via historical data.
@@ -211,7 +216,7 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                 self.prev_low = float(prev.get("low", prev.get("close", 0)))
                 self.prev_volume = int(prev.get("volume", 100000))
                 self._last_seed_time = time.time()
-                print(f"✅ Seeded previous candle: H={self.prev_high:.2f} L={self.prev_low:.2f} V={self.prev_volume}")
+                logging.getLogger(__name__).debug(f"Seeded previous candle: H={self.prev_high:.2f} L={self.prev_low:.2f}")
 
                 # Bootstrap ATR from historical candles (fixes the "ATR = 0 for first 70 mins" problem)
                 trs = []
@@ -224,14 +229,14 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                 if trs:
                     self._tr_values = trs[-14:]  # keep up to 14
                     self.current_atr = sum(self._tr_values) / len(self._tr_values)
-                    print(f"✅ Bootstrapped Live ATR from history: {self.current_atr:.2f}")
+                    logging.getLogger(__name__).debug(f"Bootstrapped Live ATR from history: {self.current_atr:.2f}")
 
             else:
-                print("⚠️ Insufficient historical candles for seeding previous candle (using conservative defaults)")
+                logger.debug("Insufficient historical candles for seeding previous candle (using conservative defaults)")
                 self.prev_high = self._last_known_price + 15 if self._last_known_price else 0
                 self.prev_low = self._last_known_price - 15 if self._last_known_price else 0
         except Exception as e:
-            print(f"⚠️ Could not seed previous candle from history ({e}). Breakout may be delayed until first roll.")
+            logger.warning(f"Could not seed previous candle from history ({e}). Breakout may be delayed until first roll.")
             self.prev_high = 0.0
             self.prev_low = 0.0
 
@@ -529,6 +534,7 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
 
         market_regime = self.get_market_regime()
         risk_mult = self.get_risk_multiplier()
+        htf_bias = market_regime["htf_bias"]
 
         if market_regime["volatility"] == "high":
             breakout_buffer *= 1.30
@@ -594,12 +600,12 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
 
         # 1. Hard Profit Target
         if pnl >= self.profit_target:
-            print(f"🎯 PROFIT TARGET HIT (+{pnl:.2f})")
+            logger.info(f"PROFIT TARGET HIT (+{pnl:.2f})")
             return True
 
         # 2. Hard Stop Loss
         if pnl <= -self.stop_loss:
-            print(f"🛑 STOP LOSS HIT ({pnl:.2f})")
+            logger.info(f"STOP LOSS HIT ({pnl:.2f})")
             return True
 
         # 3. Breakeven + Trailing Stop (ATR based)
@@ -613,13 +619,13 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                 self._best_price_in_trade = max(self._best_price_in_trade, current_price)
                 trail_stop = self._best_price_in_trade - (1.5 * atr)
                 if current_price < trail_stop:
-                    print(f"📉 Trailing Stop hit (Long). PnL: {pnl:.2f}")
+                    logger.info(f"Trailing Stop hit (Long). PnL: {pnl:.2f}")
                     return True
             else:
                 self._best_price_in_trade = min(self._best_price_in_trade, current_price)
                 trail_stop = self._best_price_in_trade + (1.5 * atr)
                 if current_price > trail_stop:
-                    print(f"📉 Trailing Stop hit (Short). PnL: {pnl:.2f}")
+                    logger.info(f"Trailing Stop hit (Short). PnL: {pnl:.2f}")
                     return True
 
         # 4. Time-based Exit (avoid sitting forever)
@@ -627,7 +633,7 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
         max_hold_seconds = 90 * 60
 
         if time_in_trade > max_hold_seconds and pnl < self.profit_target * 0.4:
-            print(f"⏰ Time-based exit after {int(time_in_trade/60)} min. PnL: {pnl:.2f}")
+            logger.info(f"Time-based exit after {int(time_in_trade/60)} min. PnL: {pnl:.2f}")
             return True
 
         return False
@@ -680,11 +686,11 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
             log_ltp_issue(str(e), self.symbol or "NIFTY")
             if is_live:
                 audit_logger.record("data.ltp_failed_live", {"symbol": self.symbol, "error": str(e)})
-                print(f"🚨 LTP FAILED IN LIVE_MODE: {e} — trading paused for safety")
+                logger.error(f"LTP FAILED IN LIVE_MODE: {e} — trading paused for safety")
                 raise DataFeedError(f"Live LTP unavailable for {self.symbol}: {e}") from e
             # Paper / dry-run only
             if self._ltp_warning_count % 10 == 1:
-                print(f"⚠️ LTP failed (PAPER), using last-known + jitter: {e}")
+                logger.warning(f"LTP failed (PAPER), using last-known + jitter: {e}")
             jitter = random.uniform(-25, 30)
             sim_price = (self._last_known_price or 24500.0) + jitter
             self._last_known_price = sim_price
@@ -733,9 +739,10 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
         if result.get("success"):
             self.last_trade_time = time.time()
             self._entry_time = time.time()
-            self._best_price_in_trade = self._last_known_price or current_price
+            # Use last known price (safe fallback). 'current_price' is not in scope here.
+            self._best_price_in_trade = self._last_known_price or 0.0
 
-            print(f"✅ {side} order submitted via Gatekeeper | qty={qty} | {result.get('order_id')}")
+            logger.info(f"{side} order submitted via Gatekeeper | qty={qty} | {result.get('order_id')}")
 
             trade_ledger.record("order.placed", {
                 "side": side,
@@ -777,7 +784,7 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
 
         if result.get("success"):
             self.last_trade_time = time.time()
-            print(f"✅ Exit order submitted via Gatekeeper | {result.get('order_id')}")
+            logger.info(f"Exit order submitted via Gatekeeper | {result.get('order_id')}")
 
             trade_ledger.record("order.exit", {
                 "side": side,
@@ -791,7 +798,8 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
 
 
 if __name__ == "__main__":
-    print("🚀 Starting Strategy in Standalone Mode...")
+    logger = logging.getLogger(__name__)
+    logger.info("Starting Strategy in Standalone Mode...")
     state_machine.set_state(SystemState.PAPER_MODE)
     kite = KiteConnect(api_key=KITE_API_KEY)
     kite.set_access_token(KITE_ACCESS_TOKEN)

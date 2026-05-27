@@ -148,9 +148,12 @@ async def get_status():
 
     # Get the most recent meaningful action from the ledger
     last_action = "No recent activity"
+    active_symbol = None
+    last_ltp = None
+    last_regime = None
     try:
         from app.trade_ledger import trade_ledger
-        recent = trade_ledger.tail(5)
+        recent = trade_ledger.tail(10)
         if recent:
             latest = recent[-1]
             etype = latest.get("event_type", "")
@@ -161,6 +164,41 @@ async def get_status():
                 last_action = f"Order Placed: {payload.get('side')} {payload.get('quantity')}"
             elif etype == "order.exit":
                 last_action = "Exit Order Submitted"
+            elif etype == "signal.rejected":
+                reason = payload.get("reason", "unknown")
+                last_action = f"Signal Rejected: {reason}"
+            # Capture any symbol/ltp/regime we logged
+            if "symbol" in payload:
+                active_symbol = payload.get("symbol")
+            if "price" in payload and isinstance(payload.get("price"), (int, float)):
+                last_ltp = payload.get("price")
+            if "regime" in payload:
+                last_regime = payload.get("regime")
+    except:
+        pass
+
+    # Fallback: pull current position symbol from risk_gatekeeper if available
+    if not active_symbol and risk_gatekeeper and risk_gatekeeper.position:
+        active_symbol = risk_gatekeeper.position.get("symbol")
+
+    # Build a tiny recent execution log (accepted + rejected) for the live GUI
+    recent_exec = []
+    try:
+        from app.trade_ledger import trade_ledger
+        events = trade_ledger.tail(15)
+        for e in reversed(events[-8:]):
+            et = e.get("event_type", "")
+            p = e.get("payload", {})
+            if et in ("signal.accepted", "signal.rejected", "order.placed", "order.exit"):
+                recent_exec.append({
+                    "ts": e.get("ts"),
+                    "type": et,
+                    "side": p.get("side"),
+                    "price": p.get("price"),
+                    "reason": p.get("reason") or p.get("filter") or p.get("message"),
+                    "regime": p.get("regime"),
+                    "qty": p.get("quantity"),
+                })
     except:
         pass
 
@@ -182,9 +220,13 @@ async def get_status():
         "token_valid": True,
         "equity_history": EQUITY_HISTORY[-100:],
         "last_action": last_action,
-        "vol_regime": "normal",   # Will be enriched if trading engine shares more context
+        "active_symbol": active_symbol,
+        "last_ltp": last_ltp,
+        "last_regime": last_regime,
+        "recent_execution": recent_exec,
+        "vol_regime": last_regime or "normal",
         "risk_mult": 1.0,
-        "market": get_market_status(),   # Always include — critical for finance terminal
+        "market": get_market_status(),
     }
 
 
@@ -215,10 +257,10 @@ async def get_trades(limit: int = 50):
         from app.trade_ledger import trade_ledger
         events = trade_ledger.tail(limit * 2)  # Get more to filter
 
-        # Filter for relevant events
+        # Filter for relevant events (include rejections so the GUI can show why no trades happened)
         relevant = [
             e for e in events 
-            if e.get("event_type") in ["signal.accepted", "order.placed", "order.exit", "order.dry_run"]
+            if e.get("event_type") in ["signal.accepted", "signal.rejected", "order.placed", "order.exit", "order.dry_run"]
         ]
 
         return {"trades": list(reversed(relevant[-limit:]))}
