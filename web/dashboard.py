@@ -13,14 +13,23 @@ Features:
 
 from fastapi import FastAPI, Request, BackgroundTasks, Form
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+import json
+import asyncio
 from fastapi.templating import Jinja2Templates
 import asyncio
 import json
 import time
 import uuid
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+
+# Suppress noisy but benign uvicorn/Starlette CancelledError on clean shutdown (Ctrl+C)
+# These are normal ASGI disconnects during graceful exit; trading loop is unaffected.
+logging.getLogger("uvicorn.error").setLevel(logging.ERROR)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("starlette").setLevel(logging.ERROR)
 
 import pandas as pd  # ensure pd is available in backtest jobs
 
@@ -177,6 +186,50 @@ async def get_status():
     except:
         pass
 
+    # Multi-symbol support for 3 indices (Monday paper trading)
+    multi_symbol_status = {}
+    per_symbol_rich_status = {}
+    try:
+        from app.multi_symbol_risk import multi_risk_manager
+        multi_symbol_status = multi_risk_manager.get_all_positions_summary()
+        per_symbol_rich_status = multi_risk_manager.get_per_symbol_status()
+    except:
+        pass
+
+    # Live snapshots from running strategies (best source for Target/SL)
+    live_snapshots_data = {}
+    try:
+        from app import live_snapshots
+        live_snapshots_data = live_snapshots.get_all_snapshots()
+    except:
+        pass
+
+    # Fallback to ledger if no live snapshots yet
+    last_signals = {}
+    try:
+        from app.trade_ledger import trade_ledger
+        recent = trade_ledger.tail(30)
+        for event in reversed(recent):
+            if event.get("event_type") == "signal.accepted":
+                raw_sym = event.get("payload", {}).get("symbol") or "NIFTY"
+                # Normalize to short index name for dashboard cards (handles NIFTY26JUNFUT -> NIFTY)
+                sym = "NIFTY" if "NIFTY" in str(raw_sym).upper() and "BANK" not in str(raw_sym).upper() else \
+                      ("BANKNIFTY" if "BANKNIFTY" in str(raw_sym).upper() else \
+                       ("SENSEX" if "SENSEX" in str(raw_sym).upper() else str(raw_sym).upper()[:10]))
+                if sym not in last_signals:
+                    p = event.get("payload", {})
+                    last_signals[sym] = {
+                        "side": p.get("side"),
+                        "price": p.get("price"),
+                        "atr": p.get("atr"),
+                        "regime": p.get("regime"),
+                        "ts": event.get("ts"),
+                        "proposed": p.get("side"),
+                        "ltp": p.get("price")
+                    }
+    except:
+        pass
+
     # Fallback: pull current position symbol from risk_gatekeeper if available
     if not active_symbol and risk_gatekeeper and risk_gatekeeper.position:
         active_symbol = risk_gatekeeper.position.get("symbol")
@@ -199,6 +252,27 @@ async def get_status():
                     "regime": p.get("regime"),
                     "qty": p.get("quantity"),
                 })
+    except:
+        pass
+
+    # Build a safe default for the three cards even on first run or when data is sparse
+    safe_cards = {}
+    for sym in ["NIFTY", "BANKNIFTY", "SENSEX"]:
+        safe_cards[sym] = per_symbol_rich_status.get(sym, {
+            "position": 0,
+            "avg_price": 0,
+            "daily_pnl": 0.0,
+            "daily_trades": 0,
+            "daily_loss": 0.0
+        })
+
+    # Enrich with live unrealized P&L from fresh snapshots (so open LONG/SHORT positions show mark-to-market in the 3 cards)
+    try:
+        for sym in safe_cards:
+            snap = live_snapshots_data.get(sym, {}) or {}
+            if snap.get("unrealized_pnl") is not None and abs(snap.get("unrealized_pnl", 0)) > 0.5:
+                safe_cards[sym]["live_unrealized_pnl"] = round(snap["unrealized_pnl"], 2)
+                # For display, the card JS will prefer this for open positions
     except:
         pass
 
@@ -227,6 +301,10 @@ async def get_status():
         "vol_regime": last_regime or "normal",
         "risk_mult": 1.0,
         "market": get_market_status(),
+        "multi_symbol_positions": multi_symbol_status,
+        "per_symbol_status": safe_cards,
+        "last_proposed_signals": last_signals,
+        "live_snapshots": live_snapshots_data or {},
     }
 
 
@@ -247,6 +325,124 @@ async def market_status():
             "is_expiry_day": False,
             "timestamp": datetime.now().isoformat()
         }
+
+
+# === Real-time SSE endpoint for the 3 index cards (WebSocket-style, much better than polling) ===
+@app.get("/api/status/stream")
+async def status_stream():
+    """
+    Server-Sent Events (SSE) for smooth real-time updates of the 3 index cards.
+    This is the recommended "WebSocket-style" approach for this architecture.
+    Frontend uses EventSource.
+    """
+    async def event_generator():
+        while True:
+            try:
+                data = {
+                    "timestamp": datetime.now().isoformat(),
+                    "per_symbol_status": {},
+                    "live_snapshots": {},
+                    "last_action": "No recent activity",
+                    "recent_execution": [],
+                    "last_proposed_signals": {},
+                }
+                try:
+                    from app.multi_symbol_risk import multi_risk_manager
+                    data["per_symbol_status"] = multi_risk_manager.get_per_symbol_status()
+                except:
+                    pass
+                try:
+                    from app import live_snapshots
+                    data["live_snapshots"] = live_snapshots.get_all_snapshots()
+                except:
+                    pass
+
+                # Enrich per-symbol status with live unrealized from snapshots for open positions in the GUI cards
+                try:
+                    snaps = data.get("live_snapshots", {})
+                    for sym in list(data.get("per_symbol_status", {}).keys()):
+                        s = snaps.get(sym, {})
+                        if s.get("unrealized_pnl") is not None and abs(s.get("unrealized_pnl", 0)) > 0.5:
+                            data["per_symbol_status"][sym]["live_unrealized_pnl"] = round(s["unrealized_pnl"], 2)
+                except:
+                    pass
+
+                # Enrich the primary live stream with data needed to keep global cards (Equity + Strategy Params) feeling alive
+                try:
+                    snaps = data.get("live_snapshots", {})
+                    any_snap = next(iter(snaps.values()), {}) if snaps else {}
+
+                    # Pull a tiny bit of equity history for the chart (last 30 points is lightweight)
+                    from app.risk_gatekeeper import risk_gatekeeper
+                    current_equity = risk_gatekeeper.capital + risk_gatekeeper.daily_pnl if risk_gatekeeper else 1000000
+
+                    # Simple rolling equity (we keep a small in-memory buffer in the stream for smoothness)
+                    if not hasattr(status_stream, "_equity_buffer"):
+                        status_stream._equity_buffer = []
+                    status_stream._equity_buffer.append({"ts": time.time(), "equity": current_equity})
+                    if len(status_stream._equity_buffer) > 40:
+                        status_stream._equity_buffer.pop(0)
+
+                    data["global_params"] = {
+                        "vol_regime": (any_snap.get("regime") or {}).get("volatility", "normal"),
+                        "risk_mult": 0.75,
+                        "equity_recent": list(status_stream._equity_buffer),
+                    }
+                except:
+                    pass
+
+                # Lightweight last action + recent for live diagnostics (prevents stale "Waiting for first decision")
+                try:
+                    from app.trade_ledger import trade_ledger
+                    recent = trade_ledger.tail(10)
+                    if recent:
+                        latest = recent[-1]
+                        etype = latest.get("event_type", "")
+                        payload = latest.get("payload", {})
+                        if etype == "signal.accepted":
+                            data["last_action"] = f"Signal Accepted: {payload.get('side')} @ {payload.get('price')}"
+                        elif etype == "order.placed":
+                            data["last_action"] = f"Order Placed: {payload.get('side')} {payload.get('quantity')}"
+                        elif etype == "order.exit":
+                            data["last_action"] = "Exit Order Submitted"
+                        elif etype == "signal.rejected":
+                            data["last_action"] = f"Signal Rejected: {payload.get('reason', 'unknown')}"
+                    # recent exec for diagnostics feed + trades table (normalized fields)
+                    for e in reversed(recent[-8:]) if recent else []:
+                        et = e.get("event_type", "")
+                        p = e.get("payload", {})
+                        if et in ("signal.accepted", "signal.rejected", "order.placed", "order.exit"):
+                            data["recent_execution"].append({
+                                "ts": e.get("ts"),
+                                "type": et,
+                                "side": p.get("side"),
+                                "price": p.get("price"),
+                                "reason": p.get("reason") or p.get("filter") or p.get("message"),
+                                "regime": p.get("regime"),
+                                "qty": p.get("quantity"),           # for trades table
+                                "quantity": p.get("quantity"),      # alias
+                            })
+                    # last proposed per symbol (normalized)
+                    last_sig = {}
+                    for e in reversed(recent) if recent else []:
+                        if e.get("event_type") == "signal.accepted":
+                            raw = e.get("payload", {}).get("symbol") or "NIFTY"
+                            sym = "NIFTY" if "NIFTY" in str(raw).upper() and "BANK" not in str(raw).upper() else ("BANKNIFTY" if "BANKNIFTY" in str(raw).upper() else ("SENSEX" if "SENSEX" in str(raw).upper() else "NIFTY"))
+                            if sym not in last_sig:
+                                pp = e.get("payload", {})
+                                last_sig[sym] = {"side": pp.get("side"), "price": pp.get("price"), "atr": pp.get("atr"), "regime": pp.get("regime"), "proposed": pp.get("side"), "ltp": pp.get("price"), "ts": e.get("ts")}
+                    data["last_proposed_signals"] = last_sig
+                except:
+                    pass
+
+                yield f"data: {json.dumps(data)}\n\n"
+                await asyncio.sleep(1.2)  # Smooth ~0.8 updates per second
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                await asyncio.sleep(3)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # === Recent Trades (from improved Trade Ledger) ===

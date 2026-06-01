@@ -311,38 +311,43 @@ class RiskGatekeeper:
         return True
 
     def sync_with_broker(self, broker_net_positions: list):
-        nifty_futures_positions = [
-            position for position in broker_net_positions
-            if str(position.get("tradingsymbol", "")).startswith("NIFTY")
-            and str(position.get("tradingsymbol", "")).endswith("FUT")
+        """
+        Multi-index aware sync (NIFTY + BANKNIFTY + SENSEX).
+        For Monday paper trading we still mostly rely on internal state,
+        but this now at least recognizes the three indices.
+        """
+        relevant = [
+            p for p in broker_net_positions
+            if any(str(p.get("tradingsymbol", "")).startswith(x) for x in ["NIFTY", "BANKNIFTY", "SENSEX"])
+            and str(p.get("tradingsymbol", "")).endswith("FUT")
         ]
 
-        if not nifty_futures_positions:
+        if not relevant:
             if self.position["quantity"] != 0:
-                logger.debug("MISMATCH: Internal state has a position but broker shows FLAT")
+                logger.debug("MISMATCH: Internal state has a position but broker shows FLAT (multi-symbol mode)")
                 self._trigger_mismatch_alarm()
             self._reset_position()
             self.pending_orders.clear()
             return
 
-        # Edge case: multiple Nifty fut positions (rare) — net them and alarm if conflicting
-        if len(nifty_futures_positions) > 1:
-            logger.warning("MULTIPLE NIFTY FUT POSITIONS DETECTED — netting for safety")
-            net_qty = sum(p.get("quantity", 0) for p in nifty_futures_positions)
-            # Use first symbol for simplicity; in reality you may want to flatten all
-            pos = nifty_futures_positions[0]
+        # For Monday paper trading we keep simple single-position logic on the legacy gatekeeper.
+        # In a full multi-symbol system we would merge positions here.
+        if len(relevant) > 1:
+            logger.warning("MULTIPLE relevant FUT positions detected — using first for legacy gatekeeper")
+            net_qty = sum(p.get("quantity", 0) for p in relevant)
+            pos = relevant[0]
             broker_qty = net_qty
             broker_symbol = pos.get("tradingsymbol")
             broker_avg = pos.get("average_price", 0.0)
             self._trigger_mismatch_alarm()
         else:
-            pos = nifty_futures_positions[0]
+            pos = relevant[0]
             broker_qty = pos.get("quantity", 0)
             broker_symbol = pos.get("tradingsymbol")
             broker_avg = pos.get("average_price", 0.0)
 
         if self.position["quantity"] != broker_qty or self.position["symbol"] != broker_symbol:
-            logger.warning("POSITION MISMATCH DETECTED")
+            logger.warning("POSITION MISMATCH DETECTED (legacy single-symbol gatekeeper)")
             logger.debug(f"   Internal: {self.position['symbol']} x {self.position['quantity']}")
             logger.debug(f"   Broker  : {broker_symbol} x {broker_qty}")
             if self.pending_orders:

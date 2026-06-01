@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }}</title>
+    <title>NiftyFuturesAlgo — 3-Index Paper Trading Terminal</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
@@ -153,6 +153,210 @@
             
             <div class="text-gray-500 text-xs font-mono">
                 {{ "Today" }} | IST
+            </div>
+        </div>
+    </div>
+
+    <!-- === 3-INDEX LIVE PAPER TRADING (Monday Focus) === -->
+    <div class="max-w-[1600px] mx-auto px-6 pt-4">
+        <div class="flex items-center justify-between mb-3">
+            <div>
+                <span class="text-emerald-400 font-semibold tracking-wider text-sm">LIVE PAPER TRADING</span>
+                <span class="ml-2 text-xs px-2 py-0.5 bg-emerald-900/40 text-emerald-400 rounded">3 INDICES • FUTURES ONLY</span>
+            </div>
+            <div class="text-xs text-gray-500">Target &amp; SL calculated from ATR • All orders simulated</div>
+        </div>
+
+        <!-- Global Multi-Symbol P&L Summary + Clear Paper Simulation Banner -->
+        <div class="mb-3 p-2 bg-[#0F111A] rounded-xl border border-gray-700 flex items-center justify-between text-sm">
+            <div class="flex items-center gap-x-4">
+                <span class="text-gray-400 text-xs">TODAY'S TOTAL P&amp;L (3 Indices)</span>
+                <span id="global-total-pnl" class="font-mono text-lg font-semibold">--</span>
+            </div>
+            <div class="text-xs text-orange-400 font-medium flex items-center gap-x-1">
+                <i class="fa-solid fa-flask"></i>
+                <span id="paper-mode-banner">PAPER MODE — Using simulated data (WebSocket unavailable)</span>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4" id="multi-index-grid">
+            <!-- Populated dynamically via JS from /api/status -->
+            <div class="panel rounded-2xl p-4 border border-gray-700" id="card-NIFTY">
+                <div class="flex justify-between items-start mb-2">
+                    <div class="font-semibold text-lg flex items-center gap-x-2">
+                        NIFTY 
+                        <span id="nifty-sim-badge" class="text-[10px] px-1.5 py-px bg-orange-900/60 text-orange-400 rounded hidden">SIM</span>
+                    </div>
+                    <div id="nifty-ltp" class="font-mono text-2xl font-semibold">--</div>
+                </div>
+                <div class="text-xs text-gray-400 mb-3">NIFTY 50 Futures</div>
+                
+                <div class="grid grid-cols-2 gap-x-4 text-sm">
+                    <div>
+                        <div class="text-[10px] text-gray-500">REGIME</div>
+                        <div id="nifty-regime" class="font-semibold">--</div>
+                    </div>
+                    <div>
+                        <div class="text-[10px] text-gray-500">ATR</div>
+                        <div id="nifty-atr" class="font-mono">--</div>
+                    </div>
+                </div>
+
+                <div class="mt-3 pt-3 border-t border-gray-700 text-xs space-y-1">
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-400">Proposed</span>
+                        <span id="nifty-proposed" class="font-semibold text-emerald-400 text-sm">--</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Target / SL</span>
+                        <span id="nifty-target-sl" class="font-mono text-emerald-300 text-sm font-semibold">-- / --</span>
+                    </div>
+                    <div class="flex justify-between text-[10px]">
+                        <span class="text-gray-500">Confidence</span>
+                        <span id="nifty-conf" class="font-mono">--</span>
+                    </div>
+                    <!-- Daily P&L -->
+                    <div class="flex justify-between text-[10px] mt-0.5">
+                        <span class="text-gray-500">Daily P&amp;L</span>
+                        <span id="nifty-daily-pnl" class="font-mono font-semibold">--</span>
+                    </div>
+                    <div class="flex justify-between text-[10px] mt-0.5 text-gray-500">
+                        <span>Last Update</span>
+                        <span id="nifty-last-update" class="font-mono">--:--:--</span>
+                    </div>
+                    <div class="flex justify-between text-[10px] mt-0.5">
+                        <span class="text-gray-500">Source</span>
+                        <span id="nifty-source" class="font-semibold text-xs">--</span>
+                    </div>
+                    <!-- Visual Signal Strength Bar -->
+                    <div class="mt-1.5">
+                        <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                            <div id="nifty-strength-bar" class="h-1.5 bg-gradient-to-r from-emerald-400 to-cyan-400 transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BANKNIFTY Card -->
+            <div class="panel rounded-2xl p-4 border border-gray-700" id="card-BANKNIFTY">
+                <div class="flex justify-between items-start mb-2">
+                    <div class="font-semibold text-lg flex items-center gap-x-2">
+                        BANKNIFTY 
+                        <span id="banknifty-sim-badge" class="text-[10px] px-1.5 py-px bg-orange-900/60 text-orange-400 rounded hidden">SIM</span>
+                    </div>
+                    <div id="banknifty-ltp" class="font-mono text-2xl font-semibold">--</div>
+                </div>
+                <div class="text-xs text-gray-400 mb-3">Bank Nifty Futures</div>
+                
+                <div class="grid grid-cols-2 gap-x-4 text-sm">
+                    <div>
+                        <div class="text-[10px] text-gray-500">REGIME</div>
+                        <div id="banknifty-regime" class="font-semibold">--</div>
+                    </div>
+                    <div>
+                        <div class="text-[10px] text-gray-500">ATR</div>
+                        <div id="banknifty-atr" class="font-mono">--</div>
+                    </div>
+                </div>
+
+                <div class="mt-3 pt-3 border-t border-gray-700 text-xs space-y-1">
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-400">Proposed</span>
+                        <span id="banknifty-proposed" class="font-semibold text-emerald-400 text-sm">--</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Target / SL</span>
+                        <span id="banknifty-target-sl" class="font-mono text-emerald-300 text-sm font-semibold">-- / --</span>
+                    </div>
+                    <div class="flex justify-between text-[10px]">
+                        <span class="text-gray-500">Confidence</span>
+                        <span id="banknifty-conf" class="font-mono">--</span>
+                    </div>
+                    <!-- Daily P&L -->
+                    <div class="flex justify-between text-[10px] mt-0.5">
+                        <span class="text-gray-500">Daily P&amp;L</span>
+                        <span id="banknifty-daily-pnl" class="font-mono font-semibold">--</span>
+                    </div>
+                    <div class="flex justify-between text-[10px] mt-0.5 text-gray-500">
+                        <span>Last Update</span>
+                        <span id="banknifty-last-update" class="font-mono">--:--:--</span>
+                    </div>
+                    <div class="flex justify-between text-[10px] mt-0.5">
+                        <span class="text-gray-500">Source</span>
+                        <span id="banknifty-source" class="font-semibold text-xs">--</span>
+                    </div>
+                    <!-- Visual Signal Strength Bar -->
+                    <div class="mt-1.5">
+                        <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                            <div id="banknifty-strength-bar" class="h-1.5 bg-gradient-to-r from-emerald-400 to-cyan-400 transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SENSEX Card -->
+            <div class="panel rounded-2xl p-4 border border-gray-700" id="card-SENSEX">
+                <div class="flex justify-between items-start mb-2">
+                    <div class="font-semibold text-lg flex items-center gap-x-2">
+                        SENSEX 
+                        <span id="sensex-sim-badge" class="text-[10px] px-1.5 py-px bg-orange-900/60 text-orange-400 rounded hidden">SIM</span>
+                    </div>
+                    <div id="sensex-ltp" class="font-mono text-2xl font-semibold">--</div>
+                </div>
+                <div class="text-xs text-gray-400 mb-3">Sensex Futures</div>
+                
+                <div class="grid grid-cols-2 gap-x-4 text-sm">
+                    <div>
+                        <div class="text-[10px] text-gray-500">REGIME</div>
+                        <div id="sensex-regime" class="font-semibold">--</div>
+                    </div>
+                    <div>
+                        <div class="text-[10px] text-gray-500">ATR</div>
+                        <div id="sensex-atr" class="font-mono">--</div>
+                    </div>
+                </div>
+
+                <div class="mt-3 pt-3 border-t border-gray-700 text-xs space-y-1">
+                    <div class="flex justify-between items-center">
+                        <span class="text-gray-400">Proposed</span>
+                        <span id="sensex-proposed" class="font-semibold text-emerald-400 text-sm">--</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-400">Target / SL</span>
+                        <span id="sensex-target-sl" class="font-mono text-emerald-300 text-sm font-semibold">-- / --</span>
+                    </div>
+                    <div class="flex justify-between text-[10px]">
+                        <span class="text-gray-500">Confidence</span>
+                        <span id="sensex-conf" class="font-mono">--</span>
+                    </div>
+                    <!-- Daily P&L -->
+                    <div class="flex justify-between text-[10px] mt-0.5">
+                        <span class="text-gray-500">Daily P&amp;L</span>
+                        <span id="sensex-daily-pnl" class="font-mono font-semibold">--</span>
+                    </div>
+                    <div class="flex justify-between text-[10px] mt-0.5 text-gray-500">
+                        <span>Last Update</span>
+                        <span id="sensex-last-update" class="font-mono">--:--:--</span>
+                    </div>
+                    <div class="flex justify-between text-[10px] mt-0.5">
+                        <span class="text-gray-500">Source</span>
+                        <span id="sensex-source" class="font-semibold text-xs">--</span>
+                    </div>
+                    <!-- Visual Signal Strength Bar -->
+                    <div class="mt-1.5">
+                        <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                            <div id="sensex-strength-bar" class="h-1.5 bg-gradient-to-r from-emerald-400 to-cyan-400 transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Mini Recent Signals Row (extra polish) -->
+        <div class="panel rounded-2xl p-4 mb-6">
+            <div class="section-title mb-2">LAST SIGNALS (All Indices)</div>
+            <div id="recent-signals" class="text-xs font-mono text-gray-300 space-y-0.5">
+                <!-- Populated by JS -->
             </div>
         </div>
     </div>
@@ -325,15 +529,15 @@
                     </div>
                     <div class="flex justify-between">
                         <span class="text-gray-400">Breakout (ATR)</span>
-                        <span class="font-mono" id="param-buffer">0.75× ATR</span>
+                        <span class="font-mono" id="param-buffer">0.75× ATR (dynamic)</span>
                     </div>
                     <div class="flex justify-between">
                         <span class="text-gray-400">Max Trades / Day</span>
-                        <span class="font-mono" id="param-max-trades">3</span>
+                        <span class="font-mono" id="param-max-trades">3 per symbol</span>
                     </div>
                     <div class="flex justify-between">
                         <span class="text-gray-400">Risk / Trade</span>
-                        <span class="font-mono" id="param-risk">0.35%</span>
+                        <span class="font-mono" id="param-risk">0.35% + regime</span>
                     </div>
                     <div class="flex justify-between">
                         <span class="text-gray-400">Cooldown</span>
@@ -379,6 +583,99 @@
 
         function updateDashboard(data) {
             if (data.error) return;
+
+            // === 3-Index Cards (Monday Paper Trading) ===
+            const multi = data.multi_symbol_positions || {};
+            const indices = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
+
+            indices.forEach(idx => {
+                const pos = multi[idx] || {};
+                const card = document.getElementById(`card-${idx}`);
+                if (!card) return;
+
+                const ltpEl = document.getElementById(`${idx.toLowerCase()}-ltp`);
+                const regimeEl = document.getElementById(`${idx.toLowerCase()}-regime`);
+                const atrEl = document.getElementById(`${idx.toLowerCase()}-atr`);
+                const proposedEl = document.getElementById(`${idx.toLowerCase()}-proposed`);
+                const tslEl = document.getElementById(`${idx.toLowerCase()}-target-sl`);
+
+                // Position / LTP
+                if (ltpEl) {
+                    ltpEl.textContent = pos.quantity ? `${pos.quantity > 0 ? 'L' : 'S'} ${Math.abs(pos.quantity)} @ ${pos.avg_price || '—'}` : 'FLAT';
+                }
+
+                // Prefer live snapshots from running strategies (best data)
+                let sig = (data.live_snapshots || {})[idx] || {};
+                if (!sig.proposed || sig.proposed === 'FLAT') {
+                    // Fallback to ledger
+                    sig = (data.last_proposed_signals || {})[idx] || sig;
+                }
+
+                if (regimeEl) {
+                    const reg = sig.regime || {};
+                    let regimeText = '—';
+                    if (typeof reg === 'string') {
+                        regimeText = reg.toUpperCase();
+                    } else if (reg && typeof reg === 'object') {
+                        regimeText = (reg.volatility || reg.trend || 'NORMAL').toString().toUpperCase();
+                    }
+                    regimeEl.textContent = regimeText;
+                }
+                if (atrEl) atrEl.textContent = sig.atr ? parseFloat(sig.atr).toFixed(1) : '—';
+
+                if (proposedEl) {
+                    if (sig.proposed && sig.proposed !== 'FLAT') {
+                        proposedEl.textContent = `${sig.proposed} @ ${sig.ltp ? parseFloat(sig.ltp).toFixed(0) : '—'}`;
+                        proposedEl.className = sig.proposed === 'LONG' ? 'font-semibold text-emerald-400' : 'font-semibold text-red-400';
+                    } else if (sig.side) {
+                        proposedEl.textContent = `${sig.side} @ ${sig.price ? parseFloat(sig.price).toFixed(0) : '—'}`;
+                        proposedEl.className = sig.side === 'LONG' ? 'font-semibold text-emerald-400' : 'font-semibold text-red-400';
+                    } else {
+                        proposedEl.textContent = '—';
+                    }
+                }
+
+                // Use real Target / SL from strategy snapshot when available (prefer active trade levels)
+                if (tslEl) {
+                    if (sig.active_target && sig.active_stop_loss && sig.active_target > 0) {
+                        tslEl.textContent = `${sig.active_target} / ${sig.active_stop_loss}`;
+                    } else if (sig.target && sig.stop_loss && sig.target > 0) {
+                        tslEl.textContent = `${sig.target} / ${sig.stop_loss}`;
+                    } else if (sig.atr && sig.price) {
+                        const atr = parseFloat(sig.atr);
+                        const entry = parseFloat(sig.price);
+                        const isLong = (sig.proposed || sig.side || '') === 'LONG';
+                        const target = (entry + (atr * 2.0)).toFixed(0);
+                        const sl = (entry - (atr * 1.1)).toFixed(0);
+                        tslEl.textContent = `${target} / ${sl}`;
+                    } else {
+                        tslEl.textContent = '— / —';
+                    }
+                }
+
+                // Confidence (prefer live position health for held trades so it doesn't stay stuck at entry 92%)
+                const confEl = document.getElementById(`${idx.toLowerCase()}-conf`);
+                if (confEl) {
+                    const c = (sig.position_health_conf !== undefined ? sig.position_health_conf : sig.confidence);
+                    if (c !== undefined && c > 0) {
+                        const isHealth = sig.position_health_conf !== undefined;
+                        confEl.textContent = `${(c * 100).toFixed(0)}%${isHealth ? ' (pos health)' : ''}`;
+                        confEl.className = c > 0.7 ? 'font-mono text-emerald-400' : 'font-mono text-yellow-400';
+                        if (isHealth) confEl.title = 'Dynamic position health (distance to SL vs Target) — not stuck at entry signal';
+                    } else {
+                        confEl.textContent = '—';
+                    }
+                }
+
+                // Simple recent signals display (last 5 from recent_execution)
+                const signalsContainer = document.getElementById('recent-signals');
+                if (signalsContainer && data.recent_execution && data.recent_execution.length > 0) {
+                    const recent = data.recent_execution.slice(0, 5).map(e => 
+                        `${e.type.includes('accepted') ? '🟢' : '🔴'} ${e.side || ''} ${e.price || ''}`
+                    ).join('  |  ');
+                    signalsContainer.textContent = recent || 'No recent signals';
+                }
+            });
 
             // Mode
             const modeBadge = document.getElementById('mode-badge');
@@ -461,12 +758,18 @@
                 diag.innerHTML = '';
                 data.recent_execution.slice(0, 12).forEach(item => {
                     const time = item.ts ? new Date(item.ts * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '';
-                    const cls = item.type.includes('rejected') ? 'text-amber-400' : (item.type.includes('accepted') ? 'text-emerald-400' : 'text-gray-300');
+                    const cls = (item.type && item.type.includes('rejected')) ? 'text-amber-400' : ((item.type && item.type.includes('accepted')) ? 'text-emerald-400' : 'text-gray-300');
                     const line = document.createElement('div');
                     line.className = `font-mono text-[10px] ${cls}`;
-                    const reason = item.reason ? ` | ${item.reason}` : '';
-                    const regime = item.regime ? ` [${item.regime}]` : '';
-                    line.textContent = `${time} ${item.type} ${item.side || ''} ${item.price ? '@'+item.price : ''}${reason}${regime}`;
+                    let reason = '';
+                    if (item.reason) {
+                        reason = ' | ' + (typeof item.reason === 'string' ? item.reason : JSON.stringify(item.reason));
+                    }
+                    let regime = '';
+                    if (item.regime) {
+                        regime = ' [' + (typeof item.regime === 'string' ? item.regime : JSON.stringify(item.regime)) + ']';
+                    }
+                    line.textContent = `${time} ${item.type || ''} ${item.side || ''} ${item.price ? '@'+item.price : ''}${reason}${regime}`;
                     diag.appendChild(line);
                 });
             }
@@ -489,6 +792,8 @@
                 data.trades.forEach(trade => {
                     const ts = new Date(trade.ts * 1000).toLocaleTimeString();
                     const payload = trade.payload || {};
+                    const safePrice = (payload.price != null) ? parseFloat(payload.price).toFixed(2) : '-';
+                    const safeQty = (payload.quantity != null) ? payload.quantity : '-';
                     
                     const row = `
                         <tr class="hover:bg-gray-800/50">
@@ -496,8 +801,8 @@
                             <td class="py-2 pr-4 font-semibold ${payload.transaction_type === 'BUY' ? 'terminal-green' : 'terminal-red'}">
                                 ${payload.transaction_type || '—'}
                             </td>
-                            <td class="py-2 pr-4">${payload.quantity || '-'}</td>
-                            <td class="py-2 pr-4">${payload.price ? payload.price.toFixed(2) : '-'}</td>
+                            <td class="py-2 pr-4">${safeQty}</td>
+                            <td class="py-2 pr-4">${safePrice}</td>
                             <td class="py-2">
                                 <span class="px-2 py-0.5 text-[10px] rounded bg-gray-800">${trade.event_type}</span>
                             </td>
@@ -510,10 +815,11 @@
             }
         }
 
-        // Periodic refresh for trades
+        // Periodic refresh for trades — now a true slow fallback. Primary path is SSE recent_execution (see updateThreeIndexCards).
         function startTradeRefresh() {
+            // We intentionally do an initial load, then a very slow poll as ultimate fallback.
             refreshTrades();
-            setInterval(refreshTrades, 8000);
+            setInterval(refreshTrades, 30000); // 30s ultra-slow fallback only
         }
 
         // Initial load
@@ -522,8 +828,289 @@
             startLiveUpdates();
             startTradeRefresh();
             
+            function updateThreeIndexCards(data) {
+                // Lightweight real-time update specifically for the 3 cards
+                const indices = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
+                const multi = data.per_symbol_status || {};
+                const snaps = data.live_snapshots || {};
+
+                indices.forEach(idx => {
+                    const pos = multi[idx] || {};
+                    const snap = snaps[idx] || {};
+
+                    const ltpEl = document.getElementById(`${idx.toLowerCase()}-ltp`);
+                    if (ltpEl) {
+                        if (snap.is_warming_up) {
+                            ltpEl.textContent = "Fetching live data...";
+                            ltpEl.className = "font-mono text-base text-blue-400";
+                        } else if (snap.ltp !== undefined) {
+                            ltpEl.textContent = `${snap.ltp}`;
+                            ltpEl.className = "font-mono text-2xl font-semibold";
+                        }
+                    }
+
+                    const regimeEl = document.getElementById(`${idx.toLowerCase()}-regime`);
+                    if (regimeEl && snap.regime) regimeEl.textContent = (snap.regime.volatility || '—').toUpperCase();
+
+                    const atrEl = document.getElementById(`${idx.toLowerCase()}-atr`);
+                    if (atrEl) {
+                        const a = snap.fast_atr || snap.atr;
+                        if (a) atrEl.textContent = parseFloat(a).toFixed(1);
+                    }
+
+                    // Clarify: show actual position state vs current signal idea
+                    const hasPosition = pos && pos.quantity && pos.quantity !== 0;
+                    const proposedEl = document.getElementById(`${idx.toLowerCase()}-proposed`);
+                    if (proposedEl) {
+                        if (snap.is_warming_up) {
+                            proposedEl.textContent = "Fetching live data...";
+                            proposedEl.className = "font-semibold text-blue-400 text-sm";
+                        } else if (hasPosition) {
+                            // Actual open position
+                            const side = pos.quantity > 0 ? 'LONG' : 'SHORT';
+                            proposedEl.textContent = `${side} (open)`;
+                            proposedEl.className = side === 'LONG' ? 'font-semibold text-emerald-400' : 'font-semibold text-red-400';
+                        } else if (snap.proposed && snap.proposed !== 'FLAT') {
+                            // Current signal idea only when flat
+                            proposedEl.textContent = `Idea: ${snap.proposed}`;
+                            proposedEl.className = 'font-semibold text-amber-400 text-sm';
+                        } else {
+                            proposedEl.textContent = 'FLAT';
+                            proposedEl.className = '';
+                        }
+                    }
+
+                    const tslEl = document.getElementById(`${idx.toLowerCase()}-target-sl`);
+                    if (tslEl) {
+                        if (snap.is_warming_up) {
+                            tslEl.textContent = "— / —";
+                        } else if (hasPosition && snap.active_target && snap.active_stop_loss && snap.active_target > 0) {
+                            // Use stored active levels for open position
+                            tslEl.textContent = `${snap.active_target} / ${snap.active_stop_loss}`;
+                        } else if (!hasPosition && snap.target && snap.stop_loss) {
+                            // Only show computed entry levels as "idea" when flat
+                            tslEl.textContent = `${snap.target} / ${snap.stop_loss} (idea)`;
+                        } else {
+                            tslEl.textContent = '— / —';
+                        }
+                    }
+
+                    const confEl = document.getElementById(`${idx.toLowerCase()}-conf`);
+                    if (confEl) {
+                        let c = 0;
+                        let label = '';
+                        if (hasPosition && snap.position_health_conf !== undefined) {
+                            c = snap.position_health_conf;
+                            label = ' (health)';
+                        } else if (!hasPosition && snap.confidence !== undefined) {
+                            c = snap.confidence;
+                            label = ' (signal)';
+                        }
+                        if (c > 0) {
+                            confEl.textContent = `${(c * 100).toFixed(0)}%${label}`;
+                        } else {
+                            confEl.textContent = hasPosition ? '—' : '0%';
+                        }
+                    }
+
+                    // Visual strength bar — only prominent for actual position health or very strong fresh signal
+                    const barEl = document.getElementById(`${idx.toLowerCase()}-strength-bar`);
+                    if (barEl) {
+                        let c = 0;
+                        let title = '';
+                        if (hasPosition && snap.position_health_conf !== undefined) {
+                            c = snap.position_health_conf;
+                            title = 'Position Health';
+                        } else if (!hasPosition && snap.confidence !== undefined && snap.confidence > 0.6) {
+                            c = snap.confidence;
+                            title = 'Strong Signal Idea';
+                        }
+                        const pct = Math.max(5, Math.min(100, (c * 100)));
+                        barEl.style.width = `${pct}%`;
+                        if (pct > 75) barEl.style.background = 'linear-gradient(to right, #34d399, #22d3ee)';
+                        else if (pct > 50) barEl.style.background = 'linear-gradient(to right, #f59e0b, #34d399)';
+                        else barEl.style.background = 'linear-gradient(to right, #f87171, #f59e0b)';
+                        barEl.title = title || 'No strong signal or position';
+                    }
+
+                    // Per-symbol Daily P&L (prefer live unrealized from snapshot for open positions, fall back to realized from risk manager)
+                    const pnlEl = document.getElementById(`${idx.toLowerCase()}-daily-pnl`);
+                    if (pnlEl) {
+                        let pnl = 0;
+                        let fromSnap = false;
+                        if (snap.unrealized_pnl !== undefined && Math.abs(snap.unrealized_pnl) > 0.1) {
+                            pnl = parseFloat(snap.unrealized_pnl);
+                            fromSnap = true;
+                        } else {
+                            const posData = (data.per_symbol_status || {})[idx] || {};
+                            if (posData.daily_pnl !== undefined) pnl = parseFloat(posData.daily_pnl);
+                        }
+                        pnlEl.textContent = `${pnl >= 0 ? '+' : ''}${pnl.toFixed(0)}`;
+                        pnlEl.className = pnl >= 0 ? 'font-mono font-semibold text-emerald-400' : 'font-mono font-semibold text-red-400';
+                        if (fromSnap) pnlEl.title = 'Live unrealized (open position)';
+                    }
+
+                    // Last Update time from snapshot + data age (helps spot SENSEX lag)
+                    const updateEl = document.getElementById(`${idx.toLowerCase()}-last-update`);
+                    if (updateEl) {
+                        let txt = snap.last_update || new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        if (snap.data_age_seconds !== undefined && snap.data_age_seconds > 8) {
+                            txt += ` (${snap.data_age_seconds}s)`;
+                        }
+                        updateEl.textContent = txt;
+                    }
+
+                    // Data Source indicator (Real vs Simulated)
+                    const sourceEl = document.getElementById(`${idx.toLowerCase()}-source`);
+                    if (sourceEl) {
+                        if (snap.is_warming_up) {
+                            sourceEl.textContent = "WARMING UP";
+                            sourceEl.className = "font-semibold text-xs text-blue-400";
+                            sourceEl.title = "Fetching live data from Kite...";
+                        } else {
+                            const source = snap.data_source || "UNKNOWN";
+                            sourceEl.textContent = source;
+                            if (source === "REAL") {
+                                sourceEl.className = "font-semibold text-xs text-emerald-400";
+                                sourceEl.title = "Live data from Kite";
+                            } else {
+                                sourceEl.className = "font-semibold text-xs text-orange-400";
+                                sourceEl.title = "Simulated / Paper data";
+                            }
+                        }
+                    }
+
+                    // Show SIM badge when we are in simulated/paper data mode
+                    const badgeEl = document.getElementById(`${idx.toLowerCase()}-sim-badge`);
+                    if (badgeEl) {
+                        const isSim = (snap.data_source === "SIMULATED");
+                        badgeEl.classList.toggle('hidden', !isSim);
+                    }
+                });
+
+                // Global Total P&L across 3 symbols
+                const globalPnlEl = document.getElementById('global-total-pnl');
+                if (globalPnlEl && data.per_symbol_status) {
+                    let total = 0;
+                    Object.values(data.per_symbol_status).forEach(s => {
+                        if (s.daily_pnl) total += parseFloat(s.daily_pnl);
+                    });
+                    globalPnlEl.textContent = `${total >= 0 ? '+' : ''}${total.toFixed(0)}`;
+                    globalPnlEl.className = total >= 0 ? 'font-mono text-lg font-semibold text-emerald-400' : 'font-mono text-lg font-semibold text-red-400';
+                }
+
+                // Update banner based on actual data source
+                const banner = document.getElementById('paper-mode-banner');
+                if (banner) {
+                    const anyReal = Object.values(data.live_snapshots || {}).some(s => s.data_source === "REAL");
+                    if (anyReal) {
+                        banner.textContent = "PAPER MODE — Mix of real + simulated data";
+                        banner.style.color = "#f59e0b";
+                    } else {
+                        banner.textContent = "PAPER MODE — Using simulated data (WebSocket unavailable)";
+                        banner.style.color = "#fb923c";
+                    }
+                }
+
+                // Keep CURRENT STRATEGY PARAMS card + Equity curve more alive from the primary cards SSE
+                if (data.global_params) {
+                    const gp = data.global_params;
+                    const regimeEl = document.getElementById('current-regime');
+                    if (regimeEl && gp.vol_regime) {
+                        regimeEl.innerText = gp.vol_regime.toUpperCase();
+                    }
+                    const riskEl = document.getElementById('risk-mult');
+                    if (riskEl && gp.risk_mult) {
+                        riskEl.innerText = parseFloat(gp.risk_mult).toFixed(2) + 'x';
+                    }
+
+                    // Light equity curve update from the live stream (prevents completely static equity chart)
+                    if (gp.equity_recent && gp.equity_recent.length > 1) {
+                        try {
+                            updateEquityChart(gp.equity_recent);
+                        } catch (e) {}
+                    }
+                }
+
+                // === Fix stale LAST SIGNIFICANT ACTION + diagnostics (now driven by live SSE too) ===
+                const lastActionEl = document.getElementById('last-action');
+                if (lastActionEl && data.last_action && data.last_action !== "No recent activity") {
+                    lastActionEl.innerText = data.last_action;
+                }
+
+                const diagEl = document.getElementById('diagnostics-feed');
+                if (diagEl && data.recent_execution && data.recent_execution.length > 0) {
+                    diagEl.innerHTML = '';
+                    data.recent_execution.slice(0, 12).forEach(item => {
+                        const time = item.ts ? new Date(item.ts * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '';
+                        const cls = item.type && item.type.includes('rejected') ? 'text-amber-400' : (item.type && item.type.includes('accepted') ? 'text-emerald-400' : 'text-gray-300');
+                        const line = document.createElement('div');
+                        line.className = `font-mono text-[10px] ${cls}`;
+                        const reason = item.reason ? ` | ${item.reason}` : '';
+                        const regime = item.regime ? ` [${item.regime}]` : '';
+                        line.textContent = `${time} ${item.type || ''} ${item.side || ''} ${item.price ? '@'+item.price : ''}${reason}${regime}`;
+                        diagEl.appendChild(line);
+                    });
+                }
+
+                // === Live Recent Trades table driven directly from SSE recent_execution (best practice push model) ===
+                // This makes the table update instantly when new signals/orders are recorded, without manual refresh or slow polling.
+                const tradesTbody = document.getElementById('trades-table');
+                if (tradesTbody && data.recent_execution && data.recent_execution.length > 0) {
+                    // Always update the trades table from the latest recent_execution for true liveness
+                    tradesTbody.innerHTML = '';
+                    data.recent_execution.slice(0, 15).forEach(item => {
+                        const ts = item.ts ? new Date(item.ts * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '';
+                        const row = document.createElement('tr');
+                        row.className = 'hover:bg-gray-800/50';
+                        const sideClass = (item.side === 'BUY' || item.side === 'LONG') ? 'terminal-green' : 'terminal-red';
+                        const safePrice = (item.price != null) ? parseFloat(item.price).toFixed(2) : '-';
+                        const safeQty = (item.qty != null) ? item.qty : (item.quantity != null ? item.quantity : '-');
+                        row.innerHTML = `
+                            <td class="py-2 pr-4 text-gray-400">${ts}</td>
+                            <td class="py-2 pr-4 font-semibold ${sideClass}">${item.side || '—'}</td>
+                            <td class="py-2 pr-4">${safeQty}</td>
+                            <td class="py-2 pr-4">${safePrice}</td>
+                            <td class="py-2"><span class="px-2 py-0.5 text-[10px] rounded bg-gray-800">${item.type || ''}</span></td>
+                        `;
+                        tradesTbody.appendChild(row);
+                    });
+                    // Update the last seen ts for future comparisons if needed
+                    const latestTs = data.recent_execution[0] ? data.recent_execution[0].ts : 0;
+                    tradesTbody.dataset.lastTs = latestTs;
+                }
+            }
+
             // Initial status fetch
-            fetch('/api/status').then(r => r.json()).then(updateDashboard);
+            fetch('/api/status').then(r => r.json()).then(data => {
+                updateDashboard(data);
+                updateThreeIndexCards(data); // Ensure cards get P&L and rich data on first load
+            });
+
+            // === Real-time SSE (WebSocket-style) for the 3 index cards ===
+            // This replaces heavy polling with efficient server-pushed updates
+            if (typeof(EventSource) !== "undefined") {
+                const evtSource = new EventSource('/api/status/stream');
+                evtSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        // Update only the 3 cards + rich data (very lightweight)
+                        updateThreeIndexCards(data);
+                    } catch(e) {}
+                };
+                evtSource.onerror = function() {
+                    // Fallback to polling if SSE fails
+                    console.warn("SSE failed, falling back to polling");
+                    setInterval(() => {
+                        fetch('/api/status').then(r => r.json()).then(updateDashboard);
+                    }, 2500);
+                };
+            } else {
+                // Very old browser fallback
+                setInterval(() => {
+                    fetch('/api/status').then(r => r.json()).then(updateDashboard);
+                }, 2500);
+            }
 
             // Stunning live market rail (the thing users complained was missing)
             startMarketRail();

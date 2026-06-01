@@ -1,4 +1,10 @@
-NiftyFuturesAlgo is a **deterministic, risk-first** algorithmic trading system for Nifty Futures using Zerodha Kite Connect.
+# NiftyFuturesAlgo
+
+NiftyFuturesAlgo is a **deterministic, risk-first** algorithmic trading system for Indian index F&O (starting with Nifty Futures) using Zerodha Kite Connect.
+
+> **2026 Founder Vision**: We are evolving this into a self-improving, agentic platform for **NIFTY, BankNifty, and Sensex in full F&O**. The system will deeply understand candles, learn from public retail failure patterns (Reddit etc.), make gated predictions, and operate a true "learn & earn" loop using Grok Build skills and agents — while protecting the existing RiskGatekeeper as sacred.
+>
+> Start here: [VISION_AND_STRATEGY.md](VISION_AND_STRATEGY.md) | [ROADMAP.md](ROADMAP.md) | [AGENTS_AND_SKILLS.md](AGENTS_AND_SKILLS.md) | [ARCHITECTURE.md](ARCHITECTURE.md) | [KITE_INTEGRATION.md](KITE_INTEGRATION.md) | [INDIAN_FO_KNOWLEDGE_BASE.md](INDIAN_FO_KNOWLEDGE_BASE.md) | [LEARNING_AND_PREDICTION.md](LEARNING_AND_PREDICTION.md)
 
 The project is built as **trading infrastructure first** and strategy logic second. The focus is on survivability, operational reliability, strict risk controls, and auditability before any real capital is used.
 

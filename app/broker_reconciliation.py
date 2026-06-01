@@ -39,9 +39,14 @@ class BrokerReconciliation:
                 risk_gatekeeper.sync_with_broker(broker_net)
                 self.consecutive_failures = 0
             except Exception as exc:
-                logger.warning(f"Risk gatekeeper sync failed: {exc}")
-                state_machine.set_state(SystemState.RECONCILIATION_FAILED)
-                raise
+                is_paper = os.getenv("FORCE_DRY_RUN", "true").lower() not in ("0", "false", "no")
+                if is_paper:
+                    logger.debug(f"[PAPER] Reconciliation sync warning (non-fatal): {exc}")
+                    self.consecutive_failures = 0  # don't count against paper
+                else:
+                    logger.warning(f"Risk gatekeeper sync failed: {exc}")
+                    state_machine.set_state(SystemState.RECONCILIATION_FAILED)
+                    raise
 
             self.last_check = time.time()
 

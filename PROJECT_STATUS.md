@@ -1,7 +1,19 @@
 # NiftyFuturesAlgo - Project Status & Checklist
 
-**Last Updated:** 2026-05 (Validated recommended validation flow: Cached Datasets panel + ⚡ Load Local + Quick Mode (auto Research + Next Bar) + full MC/GPU/cost pipeline now one-click efficient)
-**Overall Maturity:** ~97% (Local cache is now the default fast path with excellent UI guidance. Quick Mode + one-click recommended flow exercises the entire professional stack (WFA + per-fold + top-level MC with explicit gpu_used + cost sensitivity + honest notes) in under a minute. Ready for serious daily regime learning.)
+**Last Updated:** 2026-05 (Founder Vision 2026 fully documented in real repo)
+
+**Founder Vision 2026**: This project is being evolved from a hardened single-instrument Nifty futures platform into a multi-index (NIFTY + BankNifty + Sensex), full F&O, agentic "learn & earn" intelligence system.
+
+All core documentation now lives in this folder:
+- VISION_AND_STRATEGY.md (the main founder artifact)
+- ROADMAP.md
+- AGENTS_AND_SKILLS.md (how we will build using Grok latest methods)
+- ARCHITECTURE.md
+- KITE_INTEGRATION.md
+- INDIAN_FO_KNOWLEDGE_BASE.md (with retail failure anti-patterns)
+- LEARNING_AND_PREDICTION.md
+
+**Overall Maturity (Current Narrow Scope):** ~97% on the existing Nifty infrastructure. The new vision dramatically expands scope while protecting the excellent risk-first core.
 
 This document tracks the honest state of the project. Use it for planning what to build/fix next.
 
