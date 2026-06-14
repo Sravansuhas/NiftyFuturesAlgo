@@ -1,49 +1,187 @@
 # NiftyFuturesAlgo
 
-NiftyFuturesAlgo is a **deterministic, risk-first** algorithmic trading system for Indian index F&O (starting with Nifty Futures) using Zerodha Kite Connect.
+**Version 0.3.0** — A deterministic, risk-first algorithmic trading platform for Indian index F&O (NIFTY, BankNifty, Sensex futures) using Zerodha Kite Connect.
 
-> **2026 Founder Vision**: We are evolving this into a self-improving, agentic platform for **NIFTY, BankNifty, and Sensex in full F&O**. The system will deeply understand candles, learn from public retail failure patterns (Reddit etc.), make gated predictions, and operate a true "learn & earn" loop using Grok Build skills and agents — while protecting the existing RiskGatekeeper as sacred.
+> **2026 Founder Vision**: Evolving into a self-improving, agentic platform for full F&O — walk-forward validation, failure-pattern mining, Grok skills for operational workflows, and an Algo Lab UI — while keeping **RiskGatekeeper** as sacred.
 >
-> Start here: [VISION_AND_STRATEGY.md](VISION_AND_STRATEGY.md) | [ROADMAP.md](ROADMAP.md) | [AGENTS_AND_SKILLS.md](AGENTS_AND_SKILLS.md) | [ARCHITECTURE.md](ARCHITECTURE.md) | [KITE_INTEGRATION.md](KITE_INTEGRATION.md) | [INDIAN_FO_KNOWLEDGE_BASE.md](INDIAN_FO_KNOWLEDGE_BASE.md) | [LEARNING_AND_PREDICTION.md](LEARNING_AND_PREDICTION.md)
+> Start here: [VISION_AND_STRATEGY.md](VISION_AND_STRATEGY.md) | [ROADMAP.md](ROADMAP.md) | [AGENTS_AND_SKILLS.md](AGENTS_AND_SKILLS.md) | [ARCHITECTURE.md](ARCHITECTURE.md) | [KITE_INTEGRATION.md](KITE_INTEGRATION.md) | [docs/BUILD_REFERENCE.md](docs/BUILD_REFERENCE.md)
 
-The project is built as **trading infrastructure first** and strategy logic second. The focus is on survivability, operational reliability, strict risk controls, and auditability before any real capital is used.
+The project is built as **trading infrastructure first**, strategy logic second. Survivability, broker reconciliation, auditability, and guarded execution come before any real capital.
+
+**Do not use real capital** until you have validated with real historical data, extended paper trading, and independent risk review.
+
+---
+
+## Quick Start
+
+**Prerequisites:** Python 3.11+, Node.js 18+ (for dev UI), Zerodha Kite API app with redirect URL configured.
+
+```powershell
+# 1. Clone and configure
+copy .env.example .env          # Fill KITE_API_KEY, KITE_API_SECRET
+
+# 2. Install dependencies
+pip install -r requirements.txt
+pip install pyarrow             # Optional: parquet cache (falls back to CSV)
+
+# 3. Generate daily Kite token (before market open)
+python generate_token.py        # Auto-login via browser
+python generate_token.py --validate
+
+# 4. Run engine + dashboard (recommended)
+python run.py --ensure-token    # Validates token; auto-login if expired
+
+# 5. Open UI
+#    http://localhost:8050       — Legacy dashboard + built Algo Lab
+#    http://localhost:8050/ui/     — React Algo Lab (after npm run build)
+```
+
+**Closed-market development:**
+
+```powershell
+python run.py --dev                        # Safe paper + calendar bypass
+python run.py --dev --sim-vol 1.8          # Livelier simulated prices
+.\scripts\start_dev.ps1                    # Windows shortcut (token + dev mode)
+```
+
+**Frontend dev (second terminal):**
+
+```powershell
+cd frontend && npm install && npm run dev  # http://localhost:5173
+```
+
+Full operational guide: [docs/BUILD_REFERENCE.md](docs/BUILD_REFERENCE.md) | Daily routine: [MORNING_TRADING_GUIDE.md](MORNING_TRADING_GUIDE.md)
+
+---
 
 ## Current Status
 
-- **Phase 1 – Core Infrastructure**: **Completed and hardened** (risk-first, state machine, reconciliation, calendar, audit, token, guarded execution).
-- **Phase 2 – Strategy & Backtesting**: **Completed** (Previous Candle Breakout fully functional with real previous-candle seeding + rolling, dynamic risk sizing, no silent simulation in LIVE, realistic backtester with slippage/costs, metrics).
-- **Edge Cases**: Extensively covered (see below + code comments).
-- **Live Trading Readiness**: **Dry-run / paper only**. Full validation + manual approval required before any LIVE capital.
+| Phase | Status |
+|-------|--------|
+| Core infrastructure (risk, state machine, recon, calendar, audit) | **Complete** |
+| Strategy & backtesting (Previous Candle Breakout, costs, WFO) | **Complete** |
+| Multi-index paper trading (NIFTY, BANKNIFTY, SENSEX) | **Complete** |
+| Algo Lab UI + FastAPI dashboard | **Complete** |
+| Agent/skills operational layer | **In progress** |
+| Live trading | **Dry-run / paper only** |
 
-**Important**: This system is now a solid foundation. **Do not use real capital** until you have:
-1. Valid historical backtests with real NIFTY futures data over multiple regimes **with the cost model enabled**.
-2. Extended paper trading (weeks) with live data feed + real reconciliation.
-3. Reviewed all audit logs and recon behavior.
-4. Independent review of risk parameters and compliance.
+**Important:** `FORCE_DRY_RUN=true` by default. Live requires explicit `LIVE_TRADING_CONFIRMED` and manual approval.
 
-### Trader Notes — Pain Points We Explicitly Addressed
-- Opening 30 minutes on Nifty is toxic for breakout systems (fake volume, auction imbalance).
-- Last 15 minutes often sees violent gamma hedging by option writers.
-- Expiry weeks destroy many "good on paper" strategies due to vol crush + pinning.
-- Gross P&L backtests are lying to you. Real Zerodha all-in round-turn + slippage on Nifty futures is rarely under ₹350–600 per lot.
-- Rate limits + slow iteration kill research velocity — hence the cache layer.
+---
 
-### Running Paper Trading (Current Recommended Approach)
+## What This Project Does
 
-After the 90-day backtest reality check, we now have dedicated paper trading parameters:
+- **3-index futures paper engine** — NIFTY (NFO), BankNifty (NFO), Sensex (BFO) front-month futures via `instruments_manager`
+- **Previous Candle Breakout** — ATR buffers, volume/trend filters, regime detection, adaptive exits, session/expiry discipline
+- **Risk-first execution** — Every order passes `RiskGatekeeper`; broker state is authoritative; fail-closed by design
+- **Algo Lab** — Walk-forward optimization, promotion gates, backtest jobs, risk monitoring, trading journal, options sheet
+- **Learning loop** — Fill learning, rolling edge, promoted params overlays, failure-pattern mining (proposals only — human-gated)
+- **Operational scripts** — Safe deploy, morning brief, daily review, weekly earn report, EOD data audit
 
-```python
-from app.paper_trading_params import DEFAULT_PAPER_PARAMS, AGGRESSIVE_PAPER_PARAMS
-from app.strategy import PreviousCandleBreakoutStrategy
+---
 
-# Recommended for most people starting paper trading
-strategy = PreviousCandleBreakoutStrategy(kite, paper_params=DEFAULT_PAPER_PARAMS)
+## Architecture
 
-# More active (only after you are comfortable)
-# strategy = PreviousCandleBreakoutStrategy(kite, paper_params=AGGRESSIVE_PAPER_PARAMS)
+```text
+React Algo Lab UI (:5173 dev | :8050/ui built)
+        │  REST + SSE (/api/*)
+        ▼
+FastAPI Dashboard (web/dashboard.py)  :8050
+        │  shared process via run.py
+        ▼
+Trading Engine (app/main.py) — background thread
+  3-index strategies → RegimeOrchestrator → FO rules → Risk gates
+  → Order lifecycle → Kite execution (dry-run or live)
+        │
+   ┌────┴────┬──────────────┐
+   ▼         ▼              ▼
+Kite API   JSONL ledger   Parquet cache
 ```
 
-See `app/paper_trading_params.py` for details on the presets.
+All trading decisions pass through **RiskGatekeeper**. Strategy code does not place orders directly.
+
+Parallel validation path: `backtesting/` — Kite/NSE/BSE EOD fetch → parquet cache → walk-forward optimization → promotion gates → `backtest_memory`.
+
+---
+
+## Running Modes
+
+| Mode | Command | Notes |
+|------|---------|-------|
+| Paper (default) | `python run.py` | `FORCE_DRY_RUN=true` |
+| Dev / closed market | `python run.py --dev` | Calendar bypass, sim prices |
+| Live (gated) | `FORCE_DRY_RUN=false` + `LIVE_TRADING_CONFIRMED=true` | Explicit human approval required |
+| Micro-live | `MICRO_LIVE_ENABLED` + `MICRO_LIVE_CONFIRMED` | Strict lot caps |
+| Docker paper | `docker-compose -f docker-compose.paper.yml up --build` | No Postgres/Redis |
+| Engine only | `PYTHONPATH=. python -m app.main` | No dashboard |
+
+---
+
+## Key Features
+
+- **State machine** — PAPER_MODE, LIVE_MODE, CIRCUIT_BREAKER, EMERGENCY_HALT, and more
+- **RiskGatekeeper** — Daily loss, drawdown CB, lot/qty validation, sizing, consecutive-loss reduction
+- **Broker reconciliation** — Position sync, pending order tracking, circuit breaker on repeated failures
+- **Backtesting** — Zerodha cost model, WFO, promotion gates, regime breakdown, Monte Carlo metrics
+- **Data layer** — Kite WebSocket + REST, parquet cache (`data/historical_cache/`), NSE/BSE EOD audit
+- **Grok skills** — 5 operational skills in `.grok/skills/fo-*` mirrored by `scripts/fo_*.py`
+- **CI** — GitHub Actions: ruff, compile check, 34 unit tests, synthetic backtest smoke
+
+---
+
+## Trader Notes — Pain Points We Address
+
+- Opening 30 minutes on Nifty is toxic for breakout systems (fake volume, auction imbalance).
+- Last 15 minutes often sees violent gamma hedging by option writers.
+- Expiry weeks destroy many "good on paper" strategies due to vol crush and pinning.
+- Gross P&L backtests lie. Real Zerodha all-in round-turn + slippage on Nifty futures is rarely under ₹350–600 per lot.
+- Rate limits kill research velocity — hence the parquet cache layer.
+
+---
+
+## Market Folklore & Calendar Effects
+
+### Lunar cycles (full moon, new moon, quarter moons)
+
+Many traders believe moon phases affect sentiment and volatility. In India, **Krishna Paksha** (waning) vs **Shukla Paksha** (waxing) are sometimes tied to market mood. Popular folklore:
+
+- **New moon** → optimism, trend starts
+- **Full moon** → pessimism, volatility, reversals
+- **First / third quarter** → momentum build or consolidation
+
+**What research actually shows:**
+
+| Finding | Source |
+|---------|--------|
+| ~3–10% annualized return spread between new-moon and full-moon windows across international indices | [Dichev & Janes (2003)](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=281665), [Yuan et al. (2006)](https://personal.lse.ac.uk/yuan/papers/lunar.pdf) |
+| No consistent DJIA lunar pattern; full-moon effect often absent on replication | [Herbst (2007)](https://ideas.repec.org/a/kap/jbioec/v9y2007i1p1-18.html), [Keef & Khaled (2011)](https://ideas.repec.org/a/eee/empfin/v18y2011i1p56-63.html) |
+| Lunar anomaly evidence is statistically fragile under robustness tests | [Kim & Shamsuddin (2023)](https://ideas.repec.org/a/eee/finana/v90y2023ics1057521923003575.html) |
+| NIFTY 2008–2013: negligible mean-return differences; only Nifty/Energy pass 5% significance with tiny magnitudes | [Karamchandani et al. (2014)](https://ijarcsms.com/docs/paper/volume2/issue2/V2I2-0022.pdf) |
+| Quarter moons: even less empirical support than new/full | [Fortanier thesis (2018)](https://content.meteoblue.com/assets/pdfs/20180708_NL_Stock-Returns_EN.pdf) |
+
+**Consensus:** Not pure myth (several peer-reviewed papers find weak signals), but **far weaker and less reliable than folklore claims**. Daily effect sizes (~0.02%) are tiny vs daily volatility (~1%+). Transaction costs, slippage, and expiry-week confounds likely erase any edge on NIFTY futures.
+
+**Project stance:** Document as behavioral calendar folklore. Optional metadata for research/backtests only — **never a primary signal** without out-of-sample validation on NIFTY with full transaction costs. Prioritize proven drivers: trend/vol regime, global risk, RBI, FII flows, expiry dynamics.
+
+**Lunar calendar utility** (Indian market context):
+
+```powershell
+python scripts/lunar_calendar.py                              # Today's panchang + astronomical metadata
+python scripts/lunar_calendar.py --date 2026-11-08            # Diwali Amavasya / Muhurat trading day
+python scripts/lunar_calendar.py --from 2026-01-01 --to 2026-12-31   # Annual backtest enrichment index
+python scripts/lunar_calendar.py --events --from 2026-01-01 --to 2026-12-31  # Amavasya/Purnima event list
+```
+
+Outputs JSON to `data/lunar_calendar.json` (single day) or `data/lunar_calendar/{year}.json` (range). Labels include:
+
+- **Panchang (Mumbai sunrise):** Shukla/Krishna paksha, tithi, Amavasya, Purnima, Ekadashi, `is_amavasya_friday` (IIMB 2023 factor)
+- **Astronomical (09:15 IST):** phase name, illumination, Dichev half-month bucket
+- **Event windows:** ±3 and ±5 **trading-day** offsets around synodic new/full moon (Karamchandani 2014 NIFTY methodology)
+- **Confound flags:** Muhurat trading, Holi/Diwali holidays, expiry-day cross-ref
+
+Two calendar systems are emitted in parallel because Indian retail traders follow panchang Amavasya/Purnima while academic replication studies use astronomical syzygy — they can differ by 0–1 civil days.
+
+---
 
 ## Core Principles
 
@@ -54,397 +192,173 @@ See `app/paper_trading_params.py` for details on the presets.
 - Broker state is authoritative
 - Human oversight remains mandatory
 
-## Key Features
-
-- State Machine with clear modes (PAPER_MODE, LIVE_MODE, etc.)
-- Central Risk Gatekeeper with daily loss limits, position tracking, and reconciliation
-- Broker Reconciliation Service (syncs internal state with Zerodha)
-- Dynamic active Nifty futures contract selection
-- Previous Candle Breakout Strategy with real LTP
-- Modular Backtesting Framework with metrics
-- Guarded order placement with `force_dry_run` safety switch
-- Audit logging for all important events
-
-## Architecture
-
-```text
-Market Data (LTP + Dynamic Contract)
-    |
-    v
-Strategy Layer (Previous Candle Breakout)
-    |
-    v
-Risk Gatekeeper (All orders must pass here)
-    |
-    v
-Execution Layer (Guarded orders)
-    |
-    v
-Zerodha Kite Connect
-    |
-    v
-Broker Reconciliation + Audit Log
-
-```
-
-All trading decisions must pass through the Risk Gatekeeper. Strategy code does not place orders directly.
-
-## Main Modules
-
-### `app/main.py`
-
-Application entry point. It initializes Kite Connect, token handling, broker reconciliation, system state, and the active strategy loop.
-
-### `app/state_machine.py`
-
-Controls global trading state. Trading is allowed only in approved states such as `PAPER_MODE`, `TRADING_ENABLED`, or `LIVE_MODE`.
-
-Important states include:
-
-- `BOOTING`
-- `PAPER_MODE`
-- `LIVE_MODE`
-- `TRADING_DISABLED`
-- `CIRCUIT_BREAKER_TRIGGERED`
-- `RECONCILIATION_FAILED`
-- `BROKER_DISCONNECTED`
-- `EMERGENCY_HALT`
-
-### `app/risk_gatekeeper.py`
-
-Central risk and compliance layer. This is the most important module in the project.
-
-It handles:
-
-- Daily loss limit
-- Max drawdown circuit breaker
-- Lot-size validation
-- Max order quantity
-- Max trades per day
-- Position conflict checks
-- Pending order checks
-- Risk-based position sizing
-- Consecutive-loss risk reduction
-- Dry-run simulation
-- Guarded live order submission
-
-Live orders do not update internal position immediately. They are tracked as pending until broker reconciliation confirms the actual broker state.
-
-### `app/broker_reconciliation.py`
-
-Compares internal state with Zerodha broker state.
-
-It handles:
-
-- Broker position sync
-- Pending order status checks
-- Rejected and cancelled order cleanup
-- Reconciliation failure tracking
-- Circuit breaker transition after repeated failures
-
-### `app/strategy.py`
-
-Contains the strategy framework and the current strategy implementation.
-
-Current strategy:
-
-```text
-Previous Candle Breakout
-```
-
-The strategy checks:
-
-- Previous candle high / low breakout
-- Volume confirmation
-- Entry window filters
-- Expiry / edge-case filters
-- Profit target
-- Stop loss
-
-The live strategy still has simulated fallback behavior for paper mode. In `LIVE_MODE`, failed LTP access is not silently simulated.
-
-### `app/market_calendar.py`
-
-NSE F&O market calendar utilities.
-
-It handles:
-
-- IST timezone normalization
-- Regular market hours
-- Entry window checks
-- 2026 NSE F&O trading holidays
-- Muhurat trading date placeholder until official timings are published
-
-### `app/token_manager.py`
-
-Handles Kite access token setup and expiry hooks.
-
-### `app/audit_logger.py`
-
-Writes JSONL audit events for important runtime actions such as:
-
-- Blocked orders
-- Dry-run orders
-- Submitted orders
-- Failed orders
-- Order status updates
-- Broker position sync
-
-Runtime audit output is written under `data/`, which is intentionally ignored by Git.
-
-### `backtesting/`
-
-Backtesting framework for strategy validation.
-
-Important files:
-
-- `backtesting/backtester.py` - futures-style backtesting engine
-- `backtesting/previous_candle_backtest_strategy.py` - deterministic backtest strategy
-- `backtesting/metrics.py` - performance metrics
-- `backtesting/example_backtest.py` - simple generated-data example
-- `backtesting/run_real_strategy_backtest.py` - parameter tuning example
-
-Current backtests use generated sample data. Real historical NIFTY futures data ingestion is still required before strategy conclusions are meaningful.
+---
 
 ## Risk Rules
 
-Default risk posture:
+Defaults (overridable via `config/strategy_config.yaml` and `.env`):
 
-- Force dry-run enabled by default
-- Risk per trade: `0.5%`
-- Daily loss limit: `2%`
-- Max drawdown limit: `8%`
-- Lot size: `75`
-- Max lots: `4`
-- Max order quantity: `300`
-- Max trades per day: `3`
-- Risk is reduced after consecutive losses
+| Parameter | Default |
+|-----------|---------|
+| Force dry-run | `true` |
+| Risk per trade | 0.35% |
+| Daily loss limit | 2% |
+| Max drawdown | 8% |
+| Lot size | 65 (dynamic via `instruments_manager`) |
+| Max lots | 4 |
+| Max trades per day | 3 |
 
-These values are defined in `RiskConfig` inside `app/risk_gatekeeper.py`.
+Defined in `RiskConfig` (`app/risk_gatekeeper.py`) and `config/strategy_config.yaml`.
+
+---
 
 ## Strategy Logic
 
-Current strategy: Previous Candle Breakout.
+**Previous Candle Breakout** with ATR-based thresholds, volume confirmation, session filters (blocks 9:15–9:45 and after 15:15), and expiry-day caution.
 
-Basic long setup:
+**Long:** Market open → valid entry window → no position → price breaks above previous candle high + volume → RiskGatekeeper approves.
 
-1. Market is open.
-2. Entry window is valid.
-3. No existing position.
-4. Price breaks above previous candle high.
-5. Volume confirms the breakout.
-6. Risk Gatekeeper approves the order.
+**Short:** Same logic below previous candle low.
 
-Basic short setup:
+**Exits:** Profit target, stop loss, risk gate veto, broker reconciliation failure.
 
-1. Market is open.
-2. Entry window is valid.
-3. No existing position.
-4. Price breaks below previous candle low.
-5. Volume confirms the breakout.
-6. Risk Gatekeeper approves the order.
+Paper trading presets: `app/paper_trading_params.py` (`DEFAULT_PAPER_PARAMS`, `AGGRESSIVE_PAPER_PARAMS`).
 
-Exit conditions:
+---
 
-- Profit target hit
-- Stop loss hit
-- Risk gate or system state blocks further trading
-- Broker reconciliation detects unsafe state
+## Post 90-Day Reality Check (Critical Lesson)
 
-## Safety Model
+A 30-day run produced PF 4.67. The same logic on 90 days of real data produced **PF 0.43, -182% return, 869 trades**.
 
-The system intentionally fails closed.
+This is the single most important lesson:
 
-Trading can be blocked by:
+- Original parameters were dangerously overfit to a short favorable regime.
+- High trade frequency + no session discipline + fixed targets + no volatility filter = account destruction when regimes change.
 
-- State machine veto
-- Daily loss limit
-- Max drawdown limit
-- Existing open position
-- Pending order
-- Invalid quantity
-- Invalid lot size
-- Invalid symbol
-- Invalid product type
-- Max trades per day
-- Broker reconciliation failure
-- Broker disconnection
+The hardened `StrategyParams` in `backtesting/previous_candle_backtest_strategy.py` now includes strict session filters, ATR-based exits, hard trade caps, and trend/expiry caution.
+
+**Recommendation:** Re-test across multiple contracts. Only consider paper trading after PF ≥ 1.8–2.0 after realistic costs over 6–12 months with max DD under 8–10%.
+
+---
 
 ## Project Structure
 
 ```text
 .
-|-- app/
-|   |-- __init__.py          # package init + version
-|   |-- audit_logger.py
-|   |-- broker_reconciliation.py
-|   |-- main.py
-|   |-- market_calendar.py
-|   |-- risk_gatekeeper.py
-|   |-- state_machine.py
-|   |-- strategy.py
-|   `-- token_manager.py
-|-- backtesting/
-|   |-- backtester.py
-|   |-- metrics.py
-|   |-- previous_candle_backtest_strategy.py
-|   `-- run_real_strategy_backtest.py
-|-- tests/
-|   |-- test_market_calendar.py
-|   `-- test_risk_gatekeeper.py
-|-- config.py
-|-- docker-compose.yml
-|-- Dockerfile
-|-- generate_token.py
-|-- requirements.txt
-`-- README.md
+├── app/                    # Trading engine (51 modules)
+│   ├── main.py             # Multi-index strategy loop
+│   ├── risk_gatekeeper.py  # Sacred risk layer
+│   ├── strategy.py         # Previous Candle Breakout
+│   └── intelligence_loop.py, regime_orchestrator.py, ...
+├── backtesting/            # WFO, costs, promotion, cache
+├── web/                    # FastAPI dashboard + Jinja templates
+├── frontend/               # React/TS Algo Lab (Vite)
+├── scripts/                # Operational CLI (fo_*, promotion, audit)
+├── tests/                  # 34 unittest modules
+├── config/
+│   └── strategy_config.yaml
+├── docs/                   # BUILD_REFERENCE, DEV_TESTING_GUIDE, playbooks
+├── .grok/skills/           # 5 Grok skills (fo-*)
+├── run.py                  # Unified runner (primary entry)
+├── generate_token.py       # Kite token management
+└── requirements.txt
 ```
 
-## Setup
+---
 
-### 1. Create environment file
+## Setup & Verification
 
-Copy `.env.example` to `.env` and fill in local credentials:
-
-```bash
-KITE_API_KEY=
-KITE_API_SECRET=
-KITE_ACCESS_TOKEN=
-KITE_REFRESH_TOKEN=
-FORCE_DRY_RUN=true
-```
-
-Keep `.env` out of Git.
-
-### 2. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Generate Kite access token
-
-```bash
-python generate_token.py
-```
-
-This updates `.env` with the latest token values.
-
-### 4. Run tests
-
-```bash
+```powershell
+# Tests
+$env:PYTHONPATH="."
 python -m unittest discover -s tests -v
+
+# Compile check
+python -m compileall app backtesting tests generate_token.py config.py
+
+# Sample backtests
+python backtesting/example_backtest.py
+python backtesting/run_real_strategy_backtest.py
+python backtesting/examples/run_walk_forward_example.py
 ```
 
-### 5. Run sample backtests
-
-```bash
-PYTHONPATH=. python backtesting/example_backtest.py
-PYTHONPATH=. python backtesting/run_real_strategy_backtest.py
-```
-
-### 6. Run the main driver (paper)
-
-```bash
-PYTHONPATH=. python -m app.main
-```
-
-### 7. Run with Docker
-
-```bash
-docker-compose up --build
-```
-
-**Always run from the repository root** with PYTHONPATH=. for clean imports and relative package support.
+---
 
 ## Environment Variables
 
 | Variable | Required | Purpose |
-| --- | --- | --- |
+|----------|----------|---------|
 | `KITE_API_KEY` | Yes | Zerodha Kite API key |
 | `KITE_API_SECRET` | Yes | Zerodha Kite API secret |
-| `KITE_ACCESS_TOKEN` | For broker calls | Daily Kite access token |
-| `KITE_REFRESH_TOKEN` | Optional | Token refresh support |
-| `FORCE_DRY_RUN` | Recommended | Keeps all orders simulated when `true` |
+| `KITE_REDIRECT_URL` | Yes | OAuth redirect (default `http://127.0.0.1:8765/callback`) |
+| `KITE_ACCESS_TOKEN` | For broker calls | Daily token via `generate_token.py` |
+| `FORCE_DRY_RUN` | Recommended | Simulates all orders when `true` |
+| `LIVE_TRADING_CONFIRMED` | For live | Explicit human gate |
+| `USE_PROMOTED_PARAMS` | Optional | Apply WFA overlays from promotion gates |
+| `RISK_CAPITAL` | Optional | Override default 10L capital |
 
-## Verification Commands
+See `.env.example` for EOD flatten, micro-live, and dev-mode variables.
 
-Use these before pushing or running the app (from project root):
+---
 
-```bash
-PYTHONPATH=. python -m compileall app backtesting tests generate_token.py config.py
-PYTHONPATH=. python -m unittest discover -s tests -v
-PYTHONPATH=. python backtesting/example_backtest.py
-PYTHONPATH=. python backtesting/run_real_strategy_backtest.py
-```
+## Operational Scripts
 
-For the main app (paper mode, requires valid .env tokens):
+| Script | Purpose |
+|--------|---------|
+| `scripts/fo_safe_deploy.py` | Pre-deployment safety checklist |
+| `scripts/fo_market_brief.py` | Morning market regime brief |
+| `scripts/fo_daily_review.py` | End-of-day session quality report |
+| `scripts/fo_weekly_earn_report.py` | Weekly improvement aggregation |
+| `scripts/fo_failure_pattern_miner.py` | Retail failure pattern mining → proposals |
+| `scripts/run_promotion_wfo.py` | Walk-forward + promotion gates |
+| `scripts/eod_data_audit.py` | Cache vs NSE bhavcopy audit |
+| `scripts/lunar_calendar.py` | Panchang + astronomical lunar metadata for backtest research |
 
-```bash
-PYTHONPATH=. python -m app.main
-```
+Each mirrors a Grok skill in `.grok/skills/`. See [AGENTS_AND_SKILLS.md](AGENTS_AND_SKILLS.md).
 
-**Note**: backtest scripts that require real Kite data will fall back to synthetic when token missing/invalid or outside market hours — this is intentional graceful behavior.
+---
 
-## Completed Improvements (This Iteration — Trader-Driven)
+## Safety Model
 
-**High Priority Items Closed (per detailed review):**
-- **Realistic transaction costs + slippage (biggest single gap)**: New `backtesting/costs.py` with Zerodha Nifty FUT modeling (flat ₹20 brokerage + statutory + realistic 3–4+ pt slippage round-turn). A previous gross PF 4.67 on 30 days now gets properly compressed. Every serious backtest must run with the cost model enabled.
-- **Session time filters**: Signals blocked 9:15–9:45 (opening noise) and after 15:15 (gamma hedging / fakeouts). Both live strategy and backtest strategy respect this.
-- **Expiry day special logic**: On/near last Thursday, new entries are blocked or heavily de-risked after ~13:45. This is a real-world pain point most retail systems ignore until it hurts them.
-- **Data caching layer** (`backtesting/data_cache.py`): Parquet (preferred) or CSV local cache. 90–180 day multi-expiry studies are now fast and kind to your Kite rate limits.
-- **Longer history default**: The main real-data runner now defaults to 90 days + cache.
+Trading is blocked by: state machine veto, daily loss limit, max drawdown, open position, pending order, invalid quantity/symbol, max trades per day, broker reconciliation failure, or broker disconnection.
 
-**Other Hardening:**
-- Previous candle breakout is now actually functional (seeded + rolled).
-- No silent simulation in LIVE (DataFeedError + state transition).
-- Daily risk reset, dynamic sizing, proper imports/package, recon robustness, etc. (carried forward and improved).
+The system intentionally **fails closed**.
 
-**Post 90-Day Reality Check (Critical Lesson)**
-A 30-day run produced PF 4.67. The same logic on 90 days of real data produced **PF 0.43, -182% return, 869 trades**.
+---
 
-This is the single most important lesson so far:
-- The original parameters were dangerously overfit to a short favorable regime.
-- High trade frequency + no session discipline + fixed targets + no volatility filter = recipe for account destruction when regimes change.
+## Known Limitations
 
-The hardened version in `backtesting/previous_candle_backtest_strategy.py` (with `StrategyParams`) now includes:
-- Strict 10:00–15:00 IST session filter
-- ATR-based breakout threshold + minimum volatility filter
-- ATR-based profit targets and stops
-- Hard cap of 2 trades per day
-- Lightweight trend filter + expiry day caution
-- Significantly lower risk per trade
+- Postgres/Redis provisioned in `docker-compose.yml` but not wired into app logic
+- Options modules (`options_*.py`) are scaffolding, not live-traded
+- Learning/agent layer proposes; humans still gate capital
+- Not production-ready for real money
 
-**Current Recommendation**: Use the hardened `StrategyParams` defaults. Re-test across multiple contracts. Only consider paper trading after seeing acceptable net expectancy (PF ≥ 1.8–2.0 after realistic costs) over at least 6–12 months of data with max DD under 8–10%.
+---
 
-## Remaining / Future (Explicitly Not Hallucinated as Done)
+## Documentation Index
 
-- Real historical NIFTY data ingestion & continuous contract building (scripts can fetch but analysis on your side).
-- Postgres/Redis persistence for trades, signals, audit (provisioned in compose but unused).
-- Full multi-strategy aggregator + voting (stub exists).
-- Websocket / proper candle builder instead of polling + wall-time buckets.
-- SEBI/compliance formal review & audit by professional.
-- Real-money production deployment checklist.
+| Doc | Audience |
+|-----|----------|
+| [docs/BUILD_REFERENCE.md](docs/BUILD_REFERENCE.md) | How to run everything |
+| [MORNING_TRADING_GUIDE.md](MORNING_TRADING_GUIDE.md) | Daily ops |
+| [docs/DEV_TESTING_GUIDE.md](docs/DEV_TESTING_GUIDE.md) | Closed-market dev |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Current vs target architecture |
+| [VISION_AND_STRATEGY.md](VISION_AND_STRATEGY.md) | Founder vision |
+| [AGENTS_AND_SKILLS.md](AGENTS_AND_SKILLS.md) | Grok skills playbook |
+| [ROADMAP.md](ROADMAP.md) | Phase tracking |
+| [KITE_INTEGRATION.md](KITE_INTEGRATION.md) | Broker integration |
+| [backtesting/DOCUMENTATION.md](backtesting/DOCUMENTATION.md) | Validation oracle |
 
-**Do not treat this as "ready for capital".** It is now a trustworthy *infrastructure* on which you can build validated strategies.
-
-## Roadmap (Post-Completion)
-
-1. Real historical NIFTY futures data pipelines + continuous futures adjustment for backtests.
-2. Postgres persistence layer (trades, orders, daily equity snapshots, recon events).
-3. Websocket-based live candle builder + proper volume feed for strategy.
-4. Paper trading dashboard/reports + daily P&L attribution.
-5. Explicit "enable live" human gate (file or UI flag) + kill switch.
-6. Multi-strategy aggregator with confidence voting (after single strategy proven over real data).
-7. Full compliance documentation & third-party review.
+---
 
 ## Security Notes
 
-- Never commit `.env`.
-- Rotate any Kite credentials that were previously committed.
+- Never commit `.env` or credentials.
 - Keep `FORCE_DRY_RUN=true` unless live trading is explicitly approved.
-- Treat broker reconciliation as mandatory, not optional.
-- Treat audit logs as operational records.
+- Treat broker reconciliation and audit logs as mandatory operational records.
+- Rotate any credentials previously committed.
+
+---
 
 ## Disclaimer
 
