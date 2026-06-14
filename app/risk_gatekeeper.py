@@ -1,7 +1,7 @@
 import os
 import time
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Optional
 
 from kiteconnect import KiteConnect
@@ -21,7 +21,7 @@ class RiskConfig:
     risk_per_trade_pct: float = 0.005
     reduced_risk_multiplier: float = 0.5
     loss_streak_threshold: int = 2
-    lot_size: int = 75
+    lot_size: int = 65  # NIFTY 2026; multi_symbol uses instruments_manager per index
     max_lots: int = 4
     max_trades_per_day: int = 3
     max_order_quantity: int = 300
@@ -52,6 +52,10 @@ class RiskGatekeeper:
         # Startup message kept minimal for calm terminal during live hours
         logging.getLogger(__name__).info("RiskGatekeeper initialized (stateful position tracking active)")
         self.print_startup_status()
+
+    def set_force_dry_run(self, force_dry: bool) -> None:
+        """Update dry-run flag (RiskConfig is frozen — must replace, not mutate)."""
+        self.config = replace(self.config, force_dry_run=force_dry)
 
     def has_open_position(self) -> bool:
         return self.position["quantity"] != 0
@@ -93,15 +97,17 @@ class RiskGatekeeper:
         }
 
     def _validate_order(self, symbol: str, quantity: int, transaction_type: str,
-                        order_type: str, product: str, price: float, is_exit: bool) -> Optional[str]:
+                        order_type: str, product: str, price: float, is_exit: bool,
+                        lot_size: Optional[int] = None) -> Optional[str]:
         if not symbol or not isinstance(symbol, str):
             return "Invalid symbol"
         if not isinstance(quantity, int) or quantity <= 0:
             return "Invalid quantity"
         if quantity > self.config.max_order_quantity:
             return "Order quantity exceeds configured maximum"
-        if quantity % self.config.lot_size != 0:
-            return f"Quantity must be a multiple of lot size {self.config.lot_size}"
+        effective_lot = lot_size or self.config.lot_size
+        if quantity % effective_lot != 0:
+            return f"Quantity must be a multiple of lot size {effective_lot}"
         if transaction_type.upper() not in {"BUY", "SELL"}:
             return "Invalid transaction type"
         if order_type.upper() not in {"MARKET", "LIMIT", "SL", "SL-M"}:
@@ -114,10 +120,17 @@ class RiskGatekeeper:
             return "Max trades per day reached"
         return None
 
-    def can_place_order(self, is_exit: bool = False) -> bool:
-        if not state_machine.is_trading_allowed():
+    def can_place_order(self, is_exit: bool = False, multi_symbol_entry: bool = False) -> bool:
+        if not state_machine.is_trading_allowed(is_exit=is_exit):
             logger.debug("can_place_order: Trading not allowed in current state")
             return False
+
+        if not self.config.force_dry_run:
+            from .token_manager import live_trading_token_ok
+
+            if not live_trading_token_ok():
+                logger.debug("can_place_order: Kite access token invalid or missing (live mode)")
+                return False
 
         if self.daily_loss >= self.config.max_daily_loss_pct * self.capital:
             logger.debug("can_place_order: Daily loss limit reached")
@@ -127,15 +140,34 @@ class RiskGatekeeper:
             logger.debug("can_place_order: Max drawdown reached")
             return False
 
-        if self.has_open_position() and not is_exit:
-            logger.debug("can_place_order: Already have an open position")
-            return False
+        if not is_exit and not multi_symbol_entry:
+            try:
+                from .market_calendar import is_eod_flatten_window
 
-        if self.pending_orders and not is_exit:
-            logger.debug("can_place_order: Pending order exists")
-            return False
+                if is_eod_flatten_window():
+                    logger.debug("can_place_order: EOD MIS flatten window — entries blocked")
+                    return False
+            except Exception:
+                pass
+
+        if not multi_symbol_entry:
+            if self.has_open_position() and not is_exit:
+                logger.debug("can_place_order: Already have an open position")
+                return False
+
+            if self.pending_orders and not is_exit:
+                logger.debug("can_place_order: Pending order exists")
+                return False
 
         return True
+
+    @staticmethod
+    def resolve_exchange(symbol: str) -> str:
+        """NFO for NIFTY/BANKNIFTY; BFO for SENSEX futures."""
+        s = (symbol or "").upper()
+        if "SENSEX" in s:
+            return "BFO"
+        return "NFO"
 
     def place_guarded_order(self, kite: KiteConnect, symbol: str, quantity: int,
                             transaction_type: str, price: float = 0.0,
@@ -143,10 +175,16 @@ class RiskGatekeeper:
                             validity: str = "DAY", dry_run: bool = None,
                             is_exit: bool = False, force_dry_run: bool = False,
                             tag: str = "NFALGO", market_protection: int = -1,
-                            autoslice: bool = True) -> dict:
-        from market_calendar import is_market_open
+                            autoslice: bool = True, exchange: str = None,
+                            protective_stop: float = None,
+                            index_key: str = None,
+                            lot_size: Optional[int] = None,
+                            multi_symbol_entry: bool = False) -> dict:
+        from .market_calendar import is_market_open
 
-        validation_error = self._validate_order(symbol, quantity, transaction_type, order_type, product, price, is_exit)
+        validation_error = self._validate_order(
+            symbol, quantity, transaction_type, order_type, product, price, is_exit, lot_size=lot_size
+        )
         if validation_error:
             return self._blocked(validation_error, symbol, quantity, transaction_type)
 
@@ -159,7 +197,7 @@ class RiskGatekeeper:
         logger = logging.getLogger(__name__)
         logger.debug(f"[{mode}] Attempting guarded order -> {transaction_type} {quantity} {symbol}")
 
-        if not self.can_place_order(is_exit=is_exit):
+        if not self.can_place_order(is_exit=is_exit, multi_symbol_entry=multi_symbol_entry):
             return self._blocked("Order blocked by risk gates", symbol, quantity, transaction_type)
 
         if dry_run:
@@ -184,10 +222,15 @@ class RiskGatekeeper:
                 "dry_run": True,
             }
 
+        order_exchange = exchange or self.resolve_exchange(symbol)
+
         try:
+            from .kite_rate_limit import order_limiter
+
+            order_limiter.wait()
             order_id = kite.place_order(
                 variety="regular",
-                exchange="NFO",
+                exchange=order_exchange,
                 tradingsymbol=symbol,
                 transaction_type=transaction_type.upper(),
                 quantity=quantity,
@@ -200,15 +243,22 @@ class RiskGatekeeper:
             )
 
             if order_id:
-                self.pending_orders[str(order_id)] = {
+                from .order_lifecycle import order_lifecycle, _normalize_index_key
+
+                pending_meta = {
                     "symbol": symbol,
                     "quantity": quantity,
                     "transaction_type": transaction_type.upper(),
                     "is_exit": is_exit,
                     "placed_at": time.time(),
+                    "exchange": order_exchange,
+                    "tag": tag[:20],
+                    "index_key": (index_key or _normalize_index_key(symbol)).upper(),
                 }
-                if not is_exit:
-                    self.trades_today += 1
+                if protective_stop is not None:
+                    pending_meta["protective_stop"] = float(protective_stop)
+                    pending_meta["stop_price"] = float(protective_stop)
+                order_lifecycle.register_submitted_order(str(order_id), pending_meta)
                 audit_logger.record("order.submitted", {
                     "order_id": order_id,
                     "symbol": symbol,
@@ -228,6 +278,15 @@ class RiskGatekeeper:
             return self._blocked("No order ID returned from broker", symbol, quantity, transaction_type)
 
         except Exception as exc:
+            try:
+                from kiteconnect.exceptions import TokenException
+
+                if isinstance(exc, TokenException):
+                    from .kite_connect_rules import on_token_exception
+
+                    on_token_exception("place_order")
+            except Exception:
+                pass
             audit_logger.record("order.failed", {
                 "symbol": symbol,
                 "quantity": quantity,

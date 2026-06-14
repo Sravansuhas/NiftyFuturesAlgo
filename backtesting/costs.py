@@ -7,10 +7,10 @@ This is the single most important missing piece for turning "encouraging" backte
 into tradable expectancy. A 4.67 profit factor will compress dramatically once real costs
 are applied.
 
-References (as of 2025-2026):
+References (as of 2026):
 - Zerodha brokerage for F&O: Flat ₹20 per executed order or 0.03% (whichever lower).
   For a standard Nifty lot this almost always resolves to the flat ₹20 per order.
-- STT on futures (sell side): 0.0125%
+- STT on futures (sell side): 0.05% w.e.f. 1 Apr 2026 (was 0.0125% before)
 - Exchange transaction charges + SEBI + GST + Stamp duty: small, typically bring total
   statutory + brokerage to ~₹50-90 all-in round turn per lot for most users.
 - Slippage: Highly regime dependent. 1-2 ticks (1.5-3 points) is common in liquid hours
@@ -26,6 +26,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+# NSE NIFTY futures lot size (2026). BankNifty 30 / Sensex 20 — override per index in WFO.
+NIFTY_LOT_SIZE_2026 = 65
+
 
 @dataclass(frozen=True)
 class CostConfig:
@@ -38,8 +41,8 @@ class CostConfig:
     # Default realistic slippage for Nifty futures market orders (in index points)
     default_slippage_points: float = 3.5
 
-    # Current Nifty lot size (changes occasionally — keep configurable)
-    lot_size: int = 75
+    # Current Nifty lot size (65 w.e.f. late 2024 — keep configurable per index in WFO)
+    lot_size: int = NIFTY_LOT_SIZE_2026
 
     # Safety multiplier for high-uncertainty periods (opening, expiry, events)
     high_uncertainty_multiplier: float = 2.0
@@ -77,8 +80,8 @@ class TransactionCostModel:
         # If we have price, do a better STT approximation (STT is only on sell side)
         if entry_price and entry_price > 0:
             notional_per_lot = entry_price * self.config.lot_size
-            # STT ~0.0125% on sell side only for futures (approx)
-            stt_sell = notional_per_lot * 0.000125
+            # STT 0.05% on sell side only for futures (Apr 2026+)
+            stt_sell = notional_per_lot * 0.0005
             other = max(other, stt_sell * 1.8)  # buffer for txn + GST etc.
 
         base_cost = slippage_cost + brokerage + other
@@ -168,7 +171,7 @@ default_cost_model = TransactionCostModel(
         brokerage_per_order=20.0,
         other_charges_per_lot_round_turn=40.0,   # conservative buffer
         default_slippage_points=3.5,
-        lot_size=75,
+        lot_size=65,
         high_uncertainty_multiplier=1.8,
     )
 )

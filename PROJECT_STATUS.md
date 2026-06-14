@@ -270,4 +270,41 @@ Result: Full pipeline (instant cache hit, top-level MC with explicit `gpu_used` 
 
 ---
 
+## 11. Closed-Market Development Experience (June 2026)
+
+**Status: Delivered**
+
+The single biggest daily friction for serious algo work — "I can't test anything because the market is closed" — has been removed with a professional-grade set of tools.
+
+### What Was Built
+
+- `python run.py --dev` (and `-d`) as the one-command entry point for development
+- Full suite of controlled environment variables:
+  - `DEV_FORCE_MARKET_OPEN` (calendar bypass in paper only)
+  - `DEV_SIM_VOL_MULTIPLIER` + `--sim-vol`
+  - `DEV_FIXED_SIM_TIME` + `--fixed-time` (reproducible time travel for window/expiry/reset testing)
+  - `DEV_USE_CACHED_VOL` (seed realistic ATR from your local historical_cache)
+- Hard safety: every feature is explicitly disabled in `LIVE_MODE` and requires `FORCE_DRY_RUN`
+- Loud, clear banners at startup + rich logging of every dev activation
+- Dedicated documentation:
+  - `docs/DEV_TESTING_GUIDE.md` (full reference + workflows)
+  - Major new section in `PHASE0_DIAGNOSTICS_AND_LOGGING.md`
+  - Updated `run.py` help text and `--help-dev`
+
+### Impact
+
+You can now:
+- Exercise the complete `should_enter_long/short` decision tree + all risk gates while the market is closed
+- Reproduce time-based bugs on demand
+- Make simulated price action as lively as needed to observe ATR and regime behavior quickly
+- Seed realistic per-symbol volatility from your own cached data
+
+All of this feeds the same excellent diagnostic logs and dashboard that are used in live paper sessions.
+
+**Maturity**: High. These are now first-class, documented, safe parts of the development workflow.
+
+**Last Updated:** 2026-06
+
+---
+
 **Next Action:** Pick the top item from the "High Priority" list and start working on it. Update this file after each major change.

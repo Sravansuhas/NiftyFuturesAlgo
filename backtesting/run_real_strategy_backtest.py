@@ -16,7 +16,7 @@ from backtesting.previous_candle_backtest_strategy import (
     PreviousCandleBacktestStrategy, StrategyParams
 )
 from backtesting.metrics import calculate_metrics
-from backtesting.costs import TransactionCostModel, CostConfig
+from backtesting.costs import TransactionCostModel, CostConfig, NIFTY_LOT_SIZE_2026
 from backtesting.data_cache import fetch_with_cache
 from config import KITE_API_KEY, KITE_ACCESS_TOKEN
 from kiteconnect import KiteConnect
@@ -127,7 +127,7 @@ if __name__ == "__main__":
         ema_period=20,
         avoid_expiry_day=True,
         atr_period=14,
-        lot_size=75,
+        lot_size=NIFTY_LOT_SIZE_2026,
     )
     preset_name = "BALANCED"
 
@@ -156,7 +156,7 @@ if __name__ == "__main__":
         brokerage_per_order=20.0,
         other_charges_per_lot_round_turn=55.0,
         default_slippage_points=4.0,          # slightly conservative
-        lot_size=75,
+        lot_size=NIFTY_LOT_SIZE_2026,
         high_uncertainty_multiplier=1.85,
     ))
 

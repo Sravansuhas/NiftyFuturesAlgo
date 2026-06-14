@@ -33,6 +33,11 @@ class DiagnosticLogger:
         self.log_file_path: Optional[Path] = None
         self._run_id: Optional[str] = None
 
+    def _console_level(self) -> int:
+        """Terminal verbosity: WARNING by default; set DIAG_VERBOSE=true for INFO."""
+        verbose = os.getenv("DIAG_VERBOSE", "").strip().lower() in {"1", "true", "yes", "on"}
+        return logging.INFO if verbose else logging.WARNING
+
     def initialize(self, run_id: Optional[str] = None, level: int = logging.DEBUG) -> Path:
         """Initialize per-run file logging + console.
 
@@ -50,14 +55,14 @@ class DiagnosticLogger:
 
         self.log_file_path = logs_dir / f"run_{self._run_id}.log"
 
-        # Root diagnostic logger
+        # Root diagnostic logger — capture everything; handlers filter output
         self.logger = logging.getLogger("NiftyFuturesAlgo.Diag")
-        self.logger.setLevel(level)
+        self.logger.setLevel(logging.DEBUG)
 
         # Remove existing handlers to avoid duplicates on re-init
         self.logger.handlers.clear()
 
-        # File handler - detailed
+        # File handler - full detail for post-mortem diagnosis
         file_handler = logging.FileHandler(self.log_file_path, encoding="utf-8")
         file_formatter = logging.Formatter(
             fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -67,14 +72,14 @@ class DiagnosticLogger:
         file_handler.setLevel(logging.DEBUG)
         self.logger.addHandler(file_handler)
 
-        # Console handler - slightly cleaner for terminal
+        # Console handler - calm terminal; use DIAG_VERBOSE=true to mirror file INFO
         console_handler = logging.StreamHandler(sys.stdout)
         console_formatter = logging.Formatter(
             fmt="%(asctime)s | %(levelname)-5s | %(message)s",
             datefmt="%H:%M:%S"
         )
         console_handler.setFormatter(console_formatter)
-        console_handler.setLevel(logging.INFO)
+        console_handler.setLevel(self._console_level())
         self.logger.addHandler(console_handler)
 
         self.logger.info(f"=== DIAGNOSTIC SESSION STARTED ===")
@@ -94,7 +99,7 @@ class DiagnosticLogger:
         if error:
             self.get_logger().warning(f"[PRICE] {symbol} FETCH FAILED | source={source} | error={error} | duration={duration_ms:.1f}ms")
         else:
-            self.get_logger().info(f"[PRICE] {symbol} = {price:.2f} | source={source} | token={token} | {duration_ms:.1f}ms")
+            self.get_logger().debug(f"[PRICE] {symbol} = {price:.2f} | source={source} | token={token} | {duration_ms:.1f}ms")
 
     def log_atr_update(self, symbol: str, slow_atr: float, fast_atr: float, method: str):
         self.get_logger().debug(f"[ATR] {symbol} slow={slow_atr:.2f} fast={fast_atr:.2f} method={method}")
@@ -102,7 +107,12 @@ class DiagnosticLogger:
     def log_signal_decision(self, symbol: str, decision: str, context: Dict[str, Any]):
         """Log full context for every signal evaluation. This is gold for diagnosis."""
         ctx_str = " | ".join(f"{k}={v}" for k, v in context.items())
-        level = logging.WARNING if decision in ("ACCEPTED", "ENTERED") else logging.INFO
+        if decision in ("ACCEPTED", "ACCEPTED_LONG", "ACCEPTED_SHORT", "ENTERED", "POSITION_STATE_SET"):
+            level = logging.WARNING
+        elif decision.startswith("REJECTED") or "PROPOSED_BUT_REJECTED" in decision:
+            level = logging.DEBUG
+        else:
+            level = logging.INFO
         self.get_logger().log(level, f"[SIGNAL] {symbol} → {decision} | {ctx_str}")
 
     def log_snapshot(self, symbol: str, snapshot: Dict[str, Any]):
@@ -111,12 +121,14 @@ class DiagnosticLogger:
 
     def log_risk_check(self, symbol: str, passed: bool, details: Dict[str, Any]):
         status = "PASS" if passed else "BLOCK"
-        self.get_logger().info(f"[RISK] {symbol} {status} | {details}")
+        level = logging.DEBUG if passed else logging.WARNING
+        self.get_logger().log(level, f"[RISK] {symbol} {status} | {details}")
 
     def log_kite_call(self, method: str, params: Dict[str, Any], duration_ms: float, success: bool, result_size: int = 0):
         """Kite API best practice: log every external call with timing."""
         status = "OK" if success else "FAIL"
-        self.get_logger().info(f"[KITE] {method} | params={params} | {duration_ms:.1f}ms | {status} | size={result_size}")
+        level = logging.DEBUG if success else logging.WARNING
+        self.get_logger().log(level, f"[KITE] {method} | params={params} | {duration_ms:.1f}ms | {status} | size={result_size}")
 
     def log_gui_event(self, event: str, details: Dict[str, Any] = None):
         self.get_logger().debug(f"[GUI] {event} | {details or ''}")

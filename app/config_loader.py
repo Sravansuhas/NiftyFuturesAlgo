@@ -6,8 +6,9 @@ Keeps the system configurable without hardcoding parameters in code.
 """
 
 import os
+from datetime import date
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Union
 import json
 
 try:
@@ -66,6 +67,47 @@ def _get_default_config() -> Dict[str, Any]:
             "max_drawdown_pct": 0.08,
         }
     }
+
+
+def get_authoritative_session_end(for_date: Optional[Union[date, str]] = None) -> str:
+    """
+    Conservative NSE F&O entry cutoff (HH:MM) for the active session regime.
+
+    Aligns strategy ``session_end`` with ``market_calendar.get_entry_window_end``:
+    15:00 before 2026-08-03; 15:10 on/after extended close (15:40).
+    """
+    from app.market_calendar import get_entry_window_end, now_ist
+
+    if for_date is None:
+        day = now_ist().date()
+    elif isinstance(for_date, str):
+        day = date.fromisoformat(for_date)
+    else:
+        day = for_date
+    return get_entry_window_end(day).strftime("%H:%M")
+
+
+def resolve_paper_session_bounds(
+    for_date: Optional[Union[date, str]] = None,
+    *,
+    config_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """
+    Merge YAML paper_trading session bounds with date-aware NSE F&O close rules.
+
+    ``session_end`` from config is capped at the authoritative entry cutoff so
+    extended-session dates never allow entries past the safe pre-close buffer.
+    """
+    cfg = config_data if config_data is not None else config
+    paper = dict(cfg.get("paper_trading") or {})
+    auth_end = get_authoritative_session_end(for_date)
+    yaml_end = str(paper.get("session_end") or auth_end)
+    if yaml_end > auth_end:
+        paper["session_end"] = auth_end
+    else:
+        paper["session_end"] = yaml_end
+    paper.setdefault("session_start", "09:45")
+    return paper
 
 
 # Global config (loaded once at import)

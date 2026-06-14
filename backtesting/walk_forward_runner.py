@@ -36,32 +36,22 @@ from backtesting.costs import default_cost_model
 from backtesting.previous_candle_backtest_strategy import PreviousCandleBacktestStrategy, StrategyParams
 from backtesting.backtest_memory import backtest_memory
 from backtesting.metrics import monte_carlo_simulation
+from backtesting.wfo_splits import (
+    build_anchored_purged_folds,
+    score_train_result,
+    parameter_stability,
+)
+from backtesting.promotion_gates import evaluate_wfo_summary, write_candidate
 
 
 def detect_regime_simple(df: pd.DataFrame, window: int = 50) -> pd.Series:
     """
-    Robust(ish) regime detection: volatility + simple trend bias.
-    Returns Series of labels: 'low', 'normal', 'high' (vol) for backward compat.
-    For richer learning we also compute a 'trend' sidecar.
+    Vol regime Series with trend sidecar — aligned with live app/strategy.py.
+    Delegates to backtesting.regime for parity.
     """
-    atr = (df['high'] - df['low']).rolling(14).mean()
-    long_atr = atr.rolling(window).mean()
-    ratio = atr / long_atr
+    from backtesting.regime import detect_regime_simple as _detect
 
-    vol_regime = pd.Series('normal', index=df.index)
-    vol_regime[ratio < 0.7] = 'low'
-    vol_regime[ratio > 1.4] = 'high'
-
-    # Lightweight trend (close vs its own slow MA)
-    close = df['close']
-    slow_ma = close.rolling(30).mean()
-    trend = pd.Series('flat', index=df.index)
-    trend[close > slow_ma * 1.002] = 'up'
-    trend[close < slow_ma * 0.998] = 'down'
-
-    # Store trend as attribute for later attachment (hacky but keeps return sig same for now)
-    vol_regime._trend = trend
-    return vol_regime
+    return _detect(df, window=window)
 
 
 def run_walk_forward(
@@ -75,6 +65,13 @@ def run_walk_forward(
     progress_callback: Callable[[int, str], None] = None,
     cost_multiplier: float = 1.0,
     min_trades_for_validity: int = 5,
+    wfo_mode: str = "rolling_purged",
+    test_fraction: float = 0.4,
+    embargo_bars: int = 78,
+    objective: str = "calmar",
+    underlying: str = "NIFTY",
+    random_seed: Optional[int] = 42,
+    run_promotion_gates: bool = True,
 ) -> Dict[str, Any]:
     """
     Run a walk-forward backtest with regime analysis.
@@ -86,27 +83,55 @@ def run_walk_forward(
     if cost_model is None:
         cost_model = default_cost_model
 
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
     if progress_callback:
         progress_callback(10, "starting_walk_forward")
 
     results = []
-    fold_size = len(data) // n_folds
+    n_bars = len(data)
 
-    for fold in range(n_folds):
-        fold_progress = 10 + int((fold / max(1, n_folds)) * 70)
+    if wfo_mode == "rolling_purged":
+        fold_slices = build_anchored_purged_folds(
+            n_bars=n_bars,
+            n_folds=n_folds,
+            test_fraction=test_fraction,
+            embargo_bars=embargo_bars,
+            min_train_bars=max(500, int(n_bars * 0.15)),
+            min_test_bars=100,
+        )
+    else:
+        fold_slices = []
+        fold_size = n_bars // n_folds
+        for fold in range(n_folds):
+            test_start = fold * fold_size
+            test_end = (fold + 1) * fold_size if fold < n_folds - 1 else n_bars
+            train_end = int(test_start + (test_end - test_start) * train_size)
+            fold_slices.append((slice(test_start, train_end), slice(train_end, test_end)))
+
+    if not fold_slices:
+        print("[WFO] No valid folds — insufficient data for rolling purged WFO")
+        return {
+            "folds": [],
+            "avg_return": 0.0,
+            "avg_pf": 0.0,
+            "total_folds_run": 0,
+            "total_trades": 0,
+            "wfo_mode": wfo_mode,
+            "error": "insufficient_data_for_folds",
+        }
+
+    for fold_idx, (train_sl, test_sl) in enumerate(fold_slices):
+        fold = fold_idx
+        fold_progress = 10 + int((fold / max(1, len(fold_slices))) * 70)
         if progress_callback:
             progress_callback(fold_progress, f"fold_{fold+1}_training")
 
-        print(f"\n=== Fold {fold + 1}/{n_folds} ===")
+        print(f"\n=== Fold {fold + 1}/{len(fold_slices)} ({wfo_mode}) ===")
 
-        # Define train / test split
-        test_start = fold * fold_size
-        test_end = (fold + 1) * fold_size if fold < n_folds - 1 else len(data)
-
-        train_end = int(test_start + (test_end - test_start) * train_size)
-
-        train_data = data.iloc[test_start:train_end]
-        test_data = data.iloc[train_end:test_end]
+        train_data = data.iloc[train_sl]
+        test_data = data.iloc[test_sl]
 
         if len(train_data) < 100 or len(test_data) < 50:
             print("Skipping fold — insufficient data")
@@ -126,11 +151,11 @@ def run_walk_forward(
             raw_return = train_result.get('total_return_pct', 0)
             n_trades = len(train_result.get('trades', []))
 
-            # Better scoring for WFA
-            if n_trades < min_trades_for_validity:
-                score = -999
-            else:
-                score = raw_return * (n_trades ** 0.5) / 10.0
+            score = score_train_result(
+                train_result,
+                objective=objective,
+                min_trades=min_trades_for_validity,
+            )
 
             if score > best_score:
                 best_score = score
@@ -167,7 +192,8 @@ def run_walk_forward(
         regimes = regime_detector(test_data)
         regime_perf = _analyze_by_regime(test_result, regimes)
 
-        test_trades_count = len(test_result.get('trades', []))
+        test_trades = test_result.get('trades', []) or []
+        test_trades_count = len(test_trades)
         results.append({
             "fold": fold + 1,
             "best_params": best_params,
@@ -176,6 +202,7 @@ def run_walk_forward(
             "test_dd": test_result.get('max_drawdown_pct', 0),
             "regime_performance": regime_perf,
             "trades": test_trades_count,
+            "trades_list": test_trades,
             "min_trades_met": test_trades_count >= min_trades_for_validity,
             "monte_carlo": mc_results
         })
@@ -188,17 +215,39 @@ def run_walk_forward(
     if progress_callback:
         progress_callback(95, "finalizing_results")
 
+    stability = parameter_stability(results)
+
     summary = {
         "folds": results,
         "avg_return": float(np.mean([r["test_return"] for r in results])) if results else 0.0,
         "avg_pf": float(np.mean([r["test_pf"] for r in results])) if results else 0.0,
         "total_folds_run": len(results),
         "total_trades": sum(r.get("trades", 0) for r in results),
+        "wfo_mode": wfo_mode,
+        "objective": objective,
+        "underlying": underlying.upper(),
+        "embargo_bars": embargo_bars,
+        "test_fraction": test_fraction,
+        "random_seed": random_seed,
+        "parameter_stability": stability,
     }
+
+    if run_promotion_gates and results:
+        promotion = evaluate_wfo_summary(
+            summary,
+            underlying=underlying,
+            cost_multiplier=cost_multiplier,
+        )
+        summary["promotion"] = promotion.to_dict()
+        try:
+            write_candidate(promotion)
+        except Exception as promo_exc:
+            print(f"[PROMOTION] Failed to write candidate: {promo_exc}")
 
     # Record to memory for long-term repetitive learning + auto documentation
     learning_notes: List[str] = []
     regime_aggregate: Dict = {}
+    trend_aggregate: Dict = {}
     run_id: Optional[str] = None
     try:
         mem_payload: Dict[str, Any] = {
@@ -207,8 +256,8 @@ def run_walk_forward(
             "folds": results,
             "regime_performance": {},
         }
-        # Aggregate simple regime view for top-level memory query
         agg_rp: Dict[str, Any] = {}
+        agg_tp: Dict[str, Any] = {}
         for r in results:
             for reg, p in (r.get("regime_performance", {}) or {}).items():
                 if reg not in agg_rp:
@@ -217,14 +266,23 @@ def run_walk_forward(
                 agg_rp[reg]["total_pnl"] += p.get("total_pnl", 0)
                 if "win_rate" in p:
                     agg_rp[reg]["win_samples"].append(p["win_rate"])
-        for reg, bucket in agg_rp.items():
-            ws = bucket.get("win_samples", [])
-            bucket["avg_win_rate"] = round(statistics.mean(ws), 1) if ws else None
-            bucket["total_pnl"] = round(bucket["total_pnl"], 2)
-            if "win_samples" in bucket:
-                del bucket["win_samples"]
+            for trd, p in (r.get("trend_performance", {}) or {}).items():
+                if trd not in agg_tp:
+                    agg_tp[trd] = {"trades": 0, "total_pnl": 0.0, "win_samples": []}
+                agg_tp[trd]["trades"] += p.get("trades", 0)
+                agg_tp[trd]["total_pnl"] += p.get("total_pnl", 0)
+                if "win_rate" in p:
+                    agg_tp[trd]["win_samples"].append(p["win_rate"])
+        for agg in (agg_rp, agg_tp):
+            for label, bucket in agg.items():
+                ws = bucket.get("win_samples", [])
+                bucket["avg_win_rate"] = round(statistics.mean(ws), 1) if ws else None
+                bucket["total_pnl"] = round(bucket["total_pnl"], 2)
+                if "win_samples" in bucket:
+                    del bucket["win_samples"]
         mem_payload["regime_performance"] = agg_rp
         regime_aggregate = agg_rp
+        trend_aggregate = agg_tp
 
         run_id = backtest_memory.record_run(mem_payload)
         # Pull the freshly generated documentation for this run
@@ -238,6 +296,7 @@ def run_walk_forward(
     # Enrich return for GUI / caller (richer than before)
     summary["learning_notes"] = learning_notes
     summary["regime_aggregate"] = regime_aggregate
+    summary["trend_aggregate"] = trend_aggregate
     summary["run_id"] = run_id
 
     return summary
@@ -274,19 +333,25 @@ def _analyze_by_regime(result: Dict, regimes: pd.Series) -> Dict:
 
     trend_series = getattr(regimes, "_trend", None)
 
+    _TREND_MAP = {"up": "uptrend", "down": "downtrend", "flat": "ranging"}
+
     def _lookup_trend(ts):
         if trend_series is None:
-            return "flat"
+            return "ranging"
         try:
             val = trend_series.loc[ts] if hasattr(trend_series, "loc") else "flat"
-            return str(val) if val else "flat"
+            raw = str(val) if val else "flat"
+            return _TREND_MAP.get(raw, "ranging")
         except Exception:
-            return "flat"
+            return "ranging"
 
     enriched_trades = []
     perf: Dict[str, Dict] = {}
+    trend_perf: Dict[str, Dict] = {}
     for regime_label in ['low', 'normal', 'high']:
         perf[regime_label] = {"trades": 0, "total_pnl": 0.0, "win_rate": 0.0, "pnls": []}
+    for trend_label in ['uptrend', 'downtrend', 'ranging']:
+        trend_perf[trend_label] = {"trades": 0, "total_pnl": 0.0, "win_rate": 0.0, "pnls": []}
 
     for t in trades:
         ts = t.get("entry_time")
@@ -302,18 +367,26 @@ def _analyze_by_regime(result: Dict, regimes: pd.Series) -> Dict:
             bucket["total_pnl"] += pnl
             bucket["pnls"].append(pnl)
 
-    # Finalize win_rate etc.
-    for reg, bucket in perf.items():
-        if bucket["trades"] > 0:
-            wins = sum(1 for p in bucket["pnls"] if p > 0)
-            bucket["win_rate"] = round(wins / bucket["trades"] * 100, 1)
-            bucket["total_pnl"] = round(bucket["total_pnl"], 2)
-        del bucket["pnls"]  # keep payload clean
+        if trd in trend_perf:
+            tb = trend_perf[trd]
+            tb["trades"] += 1
+            pnl = t.get("pnl", 0)
+            tb["total_pnl"] += pnl
+            tb["pnls"].append(pnl)
 
-    # Replace trades in result so callers and memory get enriched versions
+    for buckets in (perf, trend_perf):
+        for label, bucket in buckets.items():
+            if bucket["trades"] > 0:
+                wins = sum(1 for p in bucket["pnls"] if p > 0)
+                bucket["win_rate"] = round(wins / bucket["trades"] * 100, 1)
+                bucket["total_pnl"] = round(bucket["total_pnl"], 2)
+            del bucket["pnls"]
+
     result["trades"] = enriched_trades
+    result["trend_performance"] = {
+        k: v for k, v in trend_perf.items() if v["trades"] > 0
+    }
 
-    # Only return regimes that had activity
     return {k: v for k, v in perf.items() if v["trades"] > 0}
 
 

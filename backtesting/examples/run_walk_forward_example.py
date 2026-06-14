@@ -28,7 +28,7 @@ import os
 from backtesting.data_loader import fetch_real_nifty_futures_data
 from backtesting.walk_forward_runner import run_walk_forward
 from backtesting.previous_candle_backtest_strategy import PreviousCandleBacktestStrategy
-from backtesting.costs import TransactionCostModel, CostConfig
+from backtesting.costs import TransactionCostModel, CostConfig, NIFTY_LOT_SIZE_2026
 
 
 def main():
@@ -55,7 +55,7 @@ def main():
         brokerage_per_order=20.0,
         other_charges_per_lot_round_turn=55.0,
         default_slippage_points=4.0,
-        lot_size=75,
+        lot_size=NIFTY_LOT_SIZE_2026,
     ))
     # ===================================================
 

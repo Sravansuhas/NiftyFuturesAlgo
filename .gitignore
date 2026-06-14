@@ -35,3 +35,18 @@ MANIFEST
 *~
 .DS_Store
 Thumbs.db
+
+# Agent / IDE artifacts (not part of the app)
+HTML/
+agent-tools/
+terminals/
+mcps/
+.grok/tmp-*/
+
+# Test / build caches
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+
+# NSE EOD raw downloads (re-fetchable)
+data/nse_eod_cache/

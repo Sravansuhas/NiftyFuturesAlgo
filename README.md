@@ -283,8 +283,7 @@ Trading can be blocked by:
 |   |-- risk_gatekeeper.py
 |   |-- state_machine.py
 |   |-- strategy.py
-|   |-- token_manager.py
-|   `-- retrieving_token.py  # legacy token helper (prefer generate_token.py)
+|   `-- token_manager.py
 |-- backtesting/
 |   |-- backtester.py
 |   |-- metrics.py

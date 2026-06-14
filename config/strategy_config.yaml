@@ -40,7 +40,7 @@ risk:
   max_daily_loss_pct: 0.02
   max_drawdown_pct: 0.08
   risk_per_trade_pct: 0.0035
-  lot_size: 75
+  lot_size: 65
   max_lots: 4
 
 # Backtesting / Validation defaults

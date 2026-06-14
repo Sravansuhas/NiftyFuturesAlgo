@@ -24,6 +24,15 @@ import pandas as pd
 import numpy as np
 
 from backtesting.backtester import BaseBacktestStrategy
+from app.breakout_core import (
+    BreakoutEntryConfig,
+    ExitState,
+    build_exit_config_from_atr,
+    evaluate_breakout_signals,
+    passes_range_volatility_filter,
+    passes_volume_filter,
+    should_exit_position,
+)
 
 # Use the central, accurate NSE calendar for consistency between live and backtest
 try:
@@ -79,7 +88,7 @@ class StrategyParams:
     atr_period: int = 14
 
     # Safety
-    lot_size: int = 75
+    lot_size: int = 65
 
     # === Research Mode (ONLY for backtesting / WFA exploration) ===
     # When True, relaxes the most conservative filters so parameter search can actually produce variation.
@@ -89,6 +98,11 @@ class StrategyParams:
     # === Realism: Execute signal on the next bar instead of the signal bar ===
     # This is a major improvement for breakout strategies (avoids look-ahead on the breakout bar itself).
     entry_on_next_bar: bool = False
+
+    # === Live-aligned exit stack (trail + time stop) ===
+    use_live_exit_stack: bool = True
+    max_hold_minutes: int = 90
+    trail_atr_mult: float = 1.5
 
 
 class PreviousCandleBacktestStrategy(BaseBacktestStrategy):
@@ -132,8 +146,11 @@ class PreviousCandleBacktestStrategy(BaseBacktestStrategy):
                 if k in valid_fields:
                     normalized[k] = v
             self.params = StrategyParams(**normalized) if normalized else StrategyParams()
+        else:
+            self.params = StrategyParams()
 
         # === Apply Research Mode relaxations (only affects backtesting) ===
+        # Never reset params here — grid-searched values must survive in all modes.
         if self.params.research_mode:
             # Significantly relax for exploration so we can actually get statistical power
             self.params.max_trades_per_day = max(self.params.max_trades_per_day, 10)
@@ -144,8 +161,6 @@ class PreviousCandleBacktestStrategy(BaseBacktestStrategy):
             self.params.avoid_expiry_day = False
             # Allow more noise for parameter exploration
             self.params.volume_mult = max(1.0, self.params.volume_mult - 0.08)
-        else:
-            self.params = StrategyParams()
 
         # State
         self.prev_high = 0.0
@@ -169,6 +184,8 @@ class PreviousCandleBacktestStrategy(BaseBacktestStrategy):
 
         # For next-bar entry realism
         self._pending_signal = None
+        self._exit_state = ExitState()
+        self._entry_bar_time = None
 
     # ------------------------------------------------------------------
     # ATR & EMA Helpers (computed on the fly during backtest)
@@ -267,6 +284,8 @@ class PreviousCandleBacktestStrategy(BaseBacktestStrategy):
             self.position = pending['quantity'] if pending['signal'] == 'BUY' else -pending['quantity']
             self.has_entered_today = True
             self.trades_today += 1
+            self._entry_bar_time = bar_time
+            self._exit_state = ExitState(best_price=current_price, entry_time=bar_time)
 
             executed_signal = {
                 **pending,
@@ -314,30 +333,26 @@ class PreviousCandleBacktestStrategy(BaseBacktestStrategy):
             # print(f"[{bar_time}] Signal rejected: {rejection_reason}")
             return None
 
-        # === VOLATILITY QUALITY FILTER ===
-        prev_range_atr = self.prev_range / self.current_atr if self.current_atr > 0 else 0
-        if prev_range_atr < self.params.min_prev_candle_range_atr:
+        entry_cfg = BreakoutEntryConfig(
+            breakout_atr_mult=self.params.breakout_atr_mult,
+            min_prev_candle_range_atr=self.params.min_prev_candle_range_atr,
+            volume_mult=self.params.volume_mult,
+            use_trend_filter=self.params.use_trend_filter,
+        )
+
+        if not passes_range_volatility_filter(self.prev_range, self.current_atr, entry_cfg.min_prev_candle_range_atr):
             self._roll_previous(current_high, current_low, current_volume)
             return None
 
-        # === VOLUME FILTER ===
-        vol_ok = current_volume > (self.prev_volume * self.params.volume_mult)
-        if not vol_ok:
+        if not passes_volume_filter(current_volume, self.prev_volume, entry_cfg.volume_mult):
             self._roll_previous(current_high, current_low, current_volume)
             return None
 
-        # === BREAKOUT CONDITION (ATR-based) ===
-        breakout_distance = self.current_atr * self.params.breakout_atr_mult
-
-        long_signal = current_price > (self.prev_high + breakout_distance)
-        short_signal = current_price < (self.prev_low - breakout_distance)
-
-        # === LIGHTWEIGHT TREND FILTER ===
-        if self.params.use_trend_filter and len(self._ema_values) > 0:
-            ema = self._get_ema()
-            if ema > 0:
-                long_signal = long_signal and (current_price > ema)
-                short_signal = short_signal and (current_price < ema)
+        breakout_distance = self.current_atr * entry_cfg.breakout_atr_mult
+        ema = self._get_ema() if entry_cfg.use_trend_filter else 0.0
+        long_signal, short_signal = evaluate_breakout_signals(
+            current_price, self.prev_high, self.prev_low, breakout_distance, ema, entry_cfg.use_trend_filter
+        )
 
         signal = None
 
@@ -382,6 +397,8 @@ class PreviousCandleBacktestStrategy(BaseBacktestStrategy):
                     self.position = raw_signal['quantity'] if raw_signal['signal'] == 'BUY' else -raw_signal['quantity']
                     self.has_entered_today = True
                     self.trades_today += 1
+                    self._entry_bar_time = bar_time
+                    self._exit_state = ExitState(best_price=current_price, entry_time=bar_time)
                     signal = raw_signal
 
         self._roll_previous(current_high, current_low, current_volume)
@@ -398,30 +415,51 @@ class PreviousCandleBacktestStrategy(BaseBacktestStrategy):
     # ------------------------------------------------------------------
     def on_exit(self, bar: pd.Series, position: int, entry_price: float) -> bool:
         current_price = float(bar['close'])
+        bar_time = bar.name
+        is_long = position > 0
 
-        if self.current_atr < 1:
-            # Fallback to fixed during warm-up
-            target = self.params.profit_target_atr_mult * 20
-            sl = self.params.stop_loss_atr_mult * 15
+        if self.params.use_live_exit_stack:
+            cfg = build_exit_config_from_atr(
+                self.current_atr,
+                self.params.profit_target_atr_mult,
+                self.params.stop_loss_atr_mult,
+                max_hold_minutes=self.params.max_hold_minutes,
+            )
+            cfg.trail_atr_mult = self.params.trail_atr_mult
+            if self._exit_state.entry_time is None:
+                self._exit_state.entry_time = self._entry_bar_time or bar_time
+            if not self._exit_state.best_price:
+                self._exit_state.best_price = entry_price
+
+            exit_now, self._exit_state, _reason = should_exit_position(
+                current_price, entry_price, is_long, self.current_atr, cfg, self._exit_state, bar_time
+            )
         else:
-            target = self.current_atr * self.params.profit_target_atr_mult
-            sl = self.current_atr * self.params.stop_loss_atr_mult
+            target, sl = (
+                self.current_atr * self.params.profit_target_atr_mult,
+                self.current_atr * self.params.stop_loss_atr_mult,
+            ) if self.current_atr >= 1 else (
+                self.params.profit_target_atr_mult * 20,
+                self.params.stop_loss_atr_mult * 15,
+            )
+            pnl = (current_price - entry_price) * position
+            exit_now = pnl >= target or pnl <= -sl
 
-        pnl = (current_price - entry_price) * position
-
-        if pnl >= target or pnl <= -sl:
+        if exit_now:
+            pnl = (current_price - entry_price) * position
             if pnl < 0:
                 self.consecutive_losses += 1
             else:
                 self.consecutive_losses = 0
                 self.current_risk_multiplier = 1.0
-
             if self.consecutive_losses >= 2:
-                self.current_risk_multiplier = 0.6  # de-risk after streak
+                self.current_risk_multiplier = 0.6
 
             self.position = 0
             self.entry_price = 0.0
             self.has_entered_today = False
+            self._entry_bar_time = None
+            self._exit_state = ExitState()
             return True
 
         return False

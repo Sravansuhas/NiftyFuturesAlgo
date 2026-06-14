@@ -4,32 +4,40 @@
 
 **Owner**: Failure Miner agent + founder review. Updated whenever new credible patterns or regulatory changes appear.
 
-**Last Updated**: 2026-05 (initial seed from codebase review + Reddit/SEBI research)
+**Last Updated**: June 2026 (updated with latest lot sizes from NSE/BSE circulars, revised expiry schedules, STT rates effective April 2026, and SEBI FY25 retail loss study)
+
+> **Important**: Market rules (lot sizes, STT, expiry days, margins) change periodically. Always cross-verify critical numbers with the latest exchange circulars or broker data before using in production risk/strategy logic.
 
 ---
 
 ## 1. Core Market Mechanics (Must Be Hard-Coded or Dynamically Queried)
 
-### Index Lot Sizes (as of late 2025 / 2026 — verify live via instruments)
-- NIFTY 50: 65
-- BankNifty: 30
-- Sensex: 20
+### Index Lot Sizes (as of June 2026 — always verify live via instruments or NSE/BSE files)
+- **NIFTY 50**: 65 (revised downward from 75 effective 30 Dec 2025)
+- **BankNifty**: 30 (temporarily increased to 35 in April 2025, revised back to 30 from 30 Dec 2025)
+- **Sensex (BSE)**: 20 (increased from 10 in late 2024/early 2025)
 
-**Rule**: Never hardcode these in strategy or risk code after Phase 1. Always read from Kite instruments response.
+**Rule**: Never hardcode these in strategy or risk code after Phase 1. Always read from Kite instruments response or the daily NSE/BSE market lot files. Lot sizes are reviewed periodically by SEBI to maintain minimum contract value norms (~₹15 lakhs+).
 
-### Expiry & Trading Calendar
-- Major index F&O (Nifty, BankNifty): Weekly expiries on Thursdays (last Thursday of month is "expiry week" with higher pinning/gamma risk).
-- Sensex F&O on BSE follows similar weekly structure.
-- **Current strength**: `app/market_calendar.py` already has excellent 2026 NSE F&O holiday handling and safe-window logic. Extend it.
+### Expiry & Trading Calendar (as of 2026)
+- **Nifty 50**: Weekly expiries continue (every Tuesday). Monthly contracts expire on the **last Tuesday** of the month.
+- **BankNifty**: Weekly options were **discontinued** effective late 2024. Only monthly (and longer tenor) contracts remain. These expire on the **last Tuesday** of the month.
+- **Sensex (BSE)**: Weekly expiries continue every **Thursday**. Monthly contracts expire on the **last Thursday** of the month.
+- If the scheduled expiry day is a holiday, expiry shifts to the previous trading day.
+- **Note**: Expiry pinning and gamma risk remain highest on weekly expiry days (especially Thursdays for Sensex and Tuesdays for Nifty).
+
+**Current strength**: `app/market_calendar.py` already has excellent 2026 NSE F&O holiday handling and safe-window logic. Extend it for the revised Tuesday/Thursday schedules.
 
 ### Product Types (Critical)
 - **MIS**: Intraday only, higher leverage, must square off by end of day.
 - **NRML**: Carry forward allowed. Required for any overnight or multi-day thesis.
 
 ### Costs (Already Excellent in `backtesting/costs.py`)
-- Brokerage: ₹20 or 0.03% per executed order.
-- STT: 0.0125% on sell side only for futures.
-- Other charges + slippage: ~₹55–90+ round-turn normal; much higher in toxic periods.
+- **Brokerage** (Zerodha and most discount brokers): ₹20 or 0.03% per executed order, whichever is lower (Futures). Flat ₹20 for Options.
+- **STT (revised w.e.f. 1 April 2026)**:
+  - Futures: **0.05%** on the sell side.
+  - Options: 0.15% on premium (sell side) + 0.15% of intrinsic value on exercised options.
+- Other charges (Transaction charges, SEBI fees, GST, Stamp Duty) + slippage: Typically ₹60–110+ round-turn in normal conditions; significantly higher during high-volatility or illiquid periods.
 - **Golden Rule**: If your edge disappears at 2× modeled costs, you probably don't have a real edge.
 
 ### Margins & Risk
@@ -47,7 +55,14 @@
 
 ## 2. Retail Failure Patterns (The Real Alpha Source)
 
-Sourced from repeated SEBI observations (91–93% of individual retail traders lose money in equity F&O) and thousands of Reddit loss confessions (r/IndianStockMarket, r/NSEbets, etc., 2024–2026).
+According to the latest comprehensive SEBI study (FY25 / April 2024 – March 2025, released July 2025):
+- Approximately **91%** of individual (retail) traders in the equity derivatives (F&O) segment incurred net losses.
+- Aggregate losses by individual traders: ~₹1.06 lakh crore (up 41% YoY).
+- Average loss per loss-making trader: ~₹1.1 lakh.
+
+This continues the long-standing pattern (previous studies showed 89–93% loss rates). SEBI-mandated risk disclosures on broker platforms now prominently state that a large majority of individual traders lose money in F&O.
+
+Sourced additionally from thousands of Reddit loss confessions (r/IndianStockMarket, r/NSEbets, etc., 2024–2026).
 
 ### Tier 1 — Catastrophic (Encode as Hard Blocks First)
 1. **No or broken risk management** — No hard SL, averaging down, oversized positions, carrying event risk overnight.
@@ -84,13 +99,30 @@ Sourced from repeated SEBI observations (91–93% of individual retail traders l
 
 This knowledge base is the primary input to the **Market Knowledge & Failure Miner** agent/skill.
 
+### Structured Export (Recommended for Agents)
+A machine-readable version is maintained at:
+- `data/knowledge_base/indian_fo_knowledge.json`
+
+This JSON contains:
+- Current lot sizes
+- Expiry rules
+- Product types
+- Costs & STT
+- Options specifics
+- Tiered retail failure patterns
+- Positive behaviors
+
+**Agents should load the JSON version** for runtime use (RiskGatekeeper filters, strategy vetoes, risk multipliers, etc.).
+
+---
+
 Outputs feed directly into:
 - RiskGatekeeper (new filters or multipliers)
 - Strategy entry/exit conditions
 - BacktestMemory documentation generator
 - Morning brief skill
 
-Version the file (or its structured JSONL export) so agents can track improvement over time.
+Version both the Markdown and the JSON so agents can track improvement over time.
 
 ---
 

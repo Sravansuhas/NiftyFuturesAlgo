@@ -343,6 +343,28 @@
 
         <!-- ========== TAB: PRESETS & DATA ========== -->
         <div id="tab-presets" class="tab-content hidden">
+            <!-- Data Health Panel -->
+            <div id="data-health-panel" class="panel rounded-3xl p-5 mb-5 border border-gray-800">
+                <div class="flex items-center justify-between mb-2">
+                    <div>
+                        <span class="font-medium text-sm">Local Data Health</span>
+                        <span id="data-health-badge" class="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-gray-800 text-gray-400">checking...</span>
+                    </div>
+                    <button onclick="refreshDataHealth()" class="text-[10px] px-2 py-0.5 bg-[#0a0c12] border border-gray-700 hover:border-emerald-600 rounded-xl">↻ Re-check</button>
+                </div>
+                <div id="data-health-summary" class="text-xs text-gray-400 mb-2">Scanning data/historical_cache and data/historical...</div>
+                <div id="data-health-files" class="text-[10px] max-h-[90px] overflow-auto space-y-0.5 mb-3"></div>
+                <div class="flex flex-wrap gap-2">
+                    <button id="btn-repair-data" onclick="triggerDataFetch(true)" class="hidden text-xs px-3 py-1.5 bg-red-900/40 border border-red-700 rounded-2xl text-red-300 hover:bg-red-900/60">
+                        Repair / Re-download from Kite
+                    </button>
+                    <button onclick="triggerDataFetch(false)" class="text-xs px-3 py-1.5 bg-[#111318] border border-gray-700 rounded-2xl hover:bg-gray-700">
+                        Smart Download (cache-first)
+                    </button>
+                </div>
+                <div id="kite-api-info" class="mt-3 text-[10px] text-gray-500 border-t border-gray-800 pt-2 hidden"></div>
+            </div>
+
             <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
                 <div class="panel rounded-3xl p-6">
                     <h3 class="font-medium mb-3">Saved Parameter Presets (local)</h3>
@@ -462,8 +484,10 @@
                 if (name === 'learnings') loadLearnings();
                 if (name === 'presets') {
                     renderPresets();
-                    // Auto-populate the cached datasets panel when visiting the tab (fresh view of local data)
-                    setTimeout(refreshCachedDatasets, 50);
+                    setTimeout(() => {
+                        refreshDataHealth();
+                        refreshCachedDatasets();
+                    }, 50);
                 }
             } catch (e) {
                 console.error("Tab switch failed:", e);
@@ -1024,14 +1048,71 @@
             }
         }
 
+        let dataJobPoll = null;
+
+        function showDataProgress(pct, stage, detail) {
+            const container = document.getElementById('data-progress-container');
+            const bar = document.getElementById('data-progress-bar');
+            const text = document.getElementById('data-progress-text');
+            if (container) container.classList.remove('hidden');
+            if (bar) bar.style.width = (pct || 0) + '%';
+            if (text) text.textContent = detail || `${stage || 'working'} — ${pct || 0}%`;
+        }
+
+        async function pollDataJob(jobId) {
+            if (dataJobPoll) clearInterval(dataJobPoll);
+            showDataProgress(2, 'queued', 'Download queued — starting...');
+            dataJobPoll = setInterval(async () => {
+                try {
+                    const r = await fetch(`/api/backtest/result/${jobId}`);
+                    const job = await r.json();
+                    const pct = job.progress ?? 0;
+                    const stage = job.stage || 'working';
+                    let detail = `${stage} — ${pct}%`;
+                    if (job.contract) {
+                        detail = `Fetching ${job.contract} (${job.contract_index || '?'}/${job.contract_total || '?'}) — ${pct}%`;
+                    } else if (stage === 'scanning_local_cache') {
+                        detail = `Scanning local cache — ${pct}%`;
+                    } else if (stage === 'saving_cache') {
+                        detail = `Saving parquet to disk — ${pct}%`;
+                    } else if (stage === 'done' || job.status === 'completed') {
+                        detail = `Complete — ${job.rows ? job.rows.toLocaleString() + ' rows' : 'done'}`;
+                    }
+                    showDataProgress(pct, stage, detail);
+
+                    if (job.status === 'completed') {
+                        clearInterval(dataJobPoll);
+                        dataJobPoll = null;
+                        showDataProgress(100, 'done', `✅ ${job.rows ? job.rows.toLocaleString() + ' bars loaded' : 'Download complete'}`);
+                        showToast(`Data ready: ${job.rows ? job.rows.toLocaleString() + ' rows' : 'complete'} (${job.source || 'cache'})`);
+                        refreshCachedDatasets();
+                        refreshDataHealth();
+                    } else if (job.status === 'failed') {
+                        clearInterval(dataJobPoll);
+                        dataJobPoll = null;
+                        showDataProgress(100, 'failed', `Failed: ${job.error || 'unknown error'}`);
+                        showToast(job.error || 'Data download failed', true);
+                    } else if (job.status === 'cancelled') {
+                        clearInterval(dataJobPoll);
+                        dataJobPoll = null;
+                        showToast('Download cancelled', true);
+                    }
+                } catch (e) { /* transient */ }
+            }, 1200);
+        }
+
         async function triggerDataFetch(forceRefresh = false) {
             const params = new URLSearchParams({ months: '4' });
             if (forceRefresh) params.set('force_refresh', 'true');
-            showToast(forceRefresh ? 'Force refresh from Kite (ignoring cache)...' : 'Starting smart data load (prefers local cache)...');
+            showToast(forceRefresh ? 'Re-downloading from Kite (ignoring cache)...' : 'Starting smart download (prefers local cache)...');
             try {
                 const res = await fetch('/api/data/fetch', { method: 'POST', body: params });
                 const j = await res.json();
-                showToast(forceRefresh ? 'Force data fetch started (fresh Kite pull).' : 'Data load job started. Will use local cache when possible.');
+                if (!j.job_id) {
+                    showToast('Failed to start download job', true);
+                    return;
+                }
+                pollDataJob(j.job_id);
             } catch (e) {
                 showToast('Data request failed', true);
             }
@@ -1045,7 +1126,8 @@
                     body: new URLSearchParams({ months: '6', use_local_only: 'true' }) 
                 });
                 const j = await res.json();
-                showToast('✅ Local cache ready — backtests will now be instant (no Kite).');
+                if (j.job_id) pollDataJob(j.job_id);
+                showToast('✅ Local cache load started...');
 
                 // Make the recommended flow even smoother: enable real data (will hit the fresh cache) and jump to Run tab
                 const useReal = document.getElementById('use_real_data');
@@ -1060,6 +1142,71 @@
                 }, 1200);
             } catch (e) {
                 showToast('Local cache load failed. No suitable data found in data/historical_cache.', true);
+            }
+        }
+
+        async function refreshDataHealth() {
+            const badge = document.getElementById('data-health-badge');
+            const summary = document.getElementById('data-health-summary');
+            const files = document.getElementById('data-health-files');
+            const repairBtn = document.getElementById('btn-repair-data');
+            const kiteInfo = document.getElementById('kite-api-info');
+            if (!summary) return;
+
+            summary.textContent = 'Checking data/historical_cache and data/historical...';
+            try {
+                const r = await fetch('/api/data/health');
+                const h = await r.json();
+                const overall = h.overall || 'unknown';
+                const colors = {
+                    healthy: 'bg-emerald-900/50 text-emerald-300 border-emerald-700',
+                    stale: 'bg-amber-900/50 text-amber-300 border-amber-700',
+                    corrupt: 'bg-red-900/50 text-red-300 border-red-700',
+                    missing: 'bg-gray-800 text-gray-300 border-gray-600',
+                    error: 'bg-red-900/50 text-red-300 border-red-700',
+                };
+                if (badge) {
+                    badge.textContent = overall.toUpperCase();
+                    badge.className = `ml-2 text-[10px] px-2 py-0.5 rounded-full border ${colors[overall] || colors.missing}`;
+                }
+                summary.textContent = h.recommendation || h.error || 'Health check complete.';
+                if (repairBtn) {
+                    repairBtn.classList.toggle('hidden', overall === 'healthy');
+                }
+
+                if (files && h.parquet_files) {
+                    files.innerHTML = '';
+                    if (h.parquet_files.length === 0) {
+                        files.innerHTML = '<div class="text-gray-500">No parquet files found.</div>';
+                    } else {
+                        h.parquet_files.forEach(p => {
+                            const st = p.status || '?';
+                            const icon = st === 'ok' ? '✓' : (st === 'stale' ? '⏳' : '✗');
+                            const color = st === 'ok' ? 'text-emerald-400' : (st === 'stale' ? 'text-amber-400' : 'text-red-400');
+                            const row = document.createElement('div');
+                            row.className = 'flex justify-between gap-2';
+                            row.innerHTML = `<span class="${color} truncate" title="${p.issues?.join('; ') || ''}">${icon} ${p.filename}</span>
+                                <span class="text-gray-500 shrink-0">${p.actual_from || '?'}→${p.actual_to || '?'} • ${p.rows || '?'} rows</span>`;
+                            files.appendChild(row);
+                        });
+                    }
+                }
+
+                if (kiteInfo && h.kite_api) {
+                    kiteInfo.classList.remove('hidden');
+                    const k = h.kite_api;
+                    const limits = Object.entries(k.interval_max_days_per_request || {})
+                        .map(([iv, d]) => `${iv}: ${d}d/request`).join(' · ');
+                    kiteInfo.innerHTML = `
+                        <strong>Kite historical API:</strong> intervals ${(k.intervals || []).join(', ')}.
+                        Project uses <code>${k.project_default_interval || '5minute'}</code>.
+                        Per-request limits: ${limits}.
+                        <a href="${k.docs_url || '#'}" target="_blank" class="text-emerald-500 hover:underline">Official docs</a>.
+                        ${h.docker_note ? `<br><span class="text-gray-600">${h.docker_note}</span>` : ''}
+                    `;
+                }
+            } catch (e) {
+                summary.textContent = 'Health check failed — is the dashboard running?';
             }
         }
 

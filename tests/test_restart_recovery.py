@@ -1,84 +1,66 @@
 """
-Restart / Recovery Testing Script
-
-This script simulates the critical production scenario:
-"Start the system → Take a trade → Kill the process → Restart → Verify that
-trailing stop, breakeven, and time exits still function correctly."
-
-This is essential for live trading reliability.
+Restart / Recovery test — verifies per-symbol state survives simulated process kill.
 """
 
 import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 import time
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import tempfile
-import shutil
-from app.strategy import PreviousCandleBreakoutStrategy, PaperTradingParams
-from app.risk_gatekeeper import RiskGatekeeper, RiskConfig
-from app.state_persistence import save_strategy_state, load_strategy_state, clear_strategy_state, STATE_FILE
+
+from app.strategy import PreviousCandleBreakoutStrategy
+from app.paper_trading_params import DEFAULT_PAPER_PARAMS
+from app.multi_symbol_risk import MultiSymbolRiskManager
+from app.state_persistence import (
+    save_symbol_state,
+    load_symbol_state,
+    clear_symbol_state,
+    STATE_DIR,
+)
 
 
-def test_restart_with_open_trade():
-    print("\n=== RESTART RECOVERY TEST ===")
+class RestartRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        import app.state_persistence as sp
+        self._sp = sp
+        self._orig_dir = sp.STATE_DIR
+        sp.STATE_DIR = Path(self._tmpdir.name) / "state"
 
-    # Setup
-    params = PaperTradingParams()
-    strategy = PreviousCandleBreakoutStrategy(kite=None, paper_params=params)
+    def tearDown(self):
+        self._sp.STATE_DIR = self._orig_dir
+        self._tmpdir.cleanup()
 
-    # Simulate we have an open long position
-    strategy.entry_price = 24000.0
-    strategy._entry_time = time.time() - 30 * 60  # 30 minutes ago
-    strategy._best_price_in_trade = 24150.0       # Best price reached so far
+    def test_restart_with_open_trade(self):
+        save_symbol_state("NIFTY", {
+            "entry_price": 24000.0,
+            "entry_time": time.time() - 30 * 60,
+            "best_price": 24150.0,
+            "symbol": "NIFTY26JUNFUT",
+        })
 
-    # Save state as if the process is about to be killed
-    save_strategy_state({
-        "entry_price": strategy.entry_price,
-        "entry_time": strategy._entry_time,
-        "best_price": strategy._best_price_in_trade,
-        "symbol": "NIFTY26MAYFUT"
-    })
-    print("State saved before 'kill'.")
+        mgr = MultiSymbolRiskManager()
+        mgr._update_paper_position("NIFTY", 65, "BUY", 24000.0, is_exit=False)
 
-    # Simulate process death
-    del strategy
+        new_strategy = PreviousCandleBreakoutStrategy(
+            kite=None, paper_params=DEFAULT_PAPER_PARAMS, risk_manager=mgr
+        )
+        new_strategy.symbol = "NIFTY26JUNFUT"
+        new_strategy.restore_from_persistence("NIFTY")
 
-    # === RESTART ===
-    print("Process restarted...")
+        persisted = load_symbol_state("NIFTY")
+        self.assertIsNotNone(persisted)
+        self.assertEqual(new_strategy.entry_price, 24000.0)
+        self.assertEqual(new_strategy._best_price_in_trade, 24150.0)
 
-    # New strategy instance (simulates fresh start)
-    new_strategy = PreviousCandleBreakoutStrategy(kite=None, paper_params=params)
-
-    # Load persisted state (this is what happens in real restart)
-    persisted = load_strategy_state()
-    if persisted:
-        new_strategy.entry_price = persisted["entry_price"]
-        new_strategy._entry_time = persisted["entry_time"]
-        new_strategy._best_price_in_trade = persisted.get("best_price", new_strategy.entry_price)
-        print("State successfully restored after restart.")
-
-    # Now simulate price action after restart
-    # Current price pulls back — trailing stop should trigger
-    current_price = 24100.0   # Pullback from 24150 best
-
-    # Manually call should_exit (in real system this is called in run_once)
-    should_exit = new_strategy.should_exit()
-
-    print(f"Current Price: {current_price}")
-    print(f"Entry Price:   {new_strategy.entry_price}")
-    print(f"Best Price:    {new_strategy._best_price_in_trade}")
-    print(f"Should Exit after restart? -> {should_exit}")
-
-    if should_exit:
-        print("✅ SUCCESS: Trailing / Breakeven logic survived restart correctly.")
-    else:
-        print("❌ FAILURE: Exit logic did not trigger as expected after restart.")
-
-    # Cleanup
-    clear_strategy_state()
-    print("Test cleanup complete.\n")
+        clear_symbol_state("NIFTY")
+        self.assertIsNone(load_symbol_state("NIFTY"))
 
 
 if __name__ == "__main__":
-    test_restart_with_open_trade()
+    unittest.main()

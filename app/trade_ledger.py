@@ -1,42 +1,124 @@
 """
 app/trade_ledger.py
 
-Lightweight, append-only trade & signal ledger.
-Uses JSONL for simplicity and durability (easy to later migrate to Postgres).
-
-This gives us basic persistence for:
-- All entries/exits with gross + net P&L
-- Risk decisions
-- Reconciliation events
-
-Future: swap the backend for SQLite or Postgres while keeping the same interface.
+Lightweight, append-only trade & signal ledger (JSONL).
+Survives restarts — never wiped unless CLEAR_LEDGER_ON_START=true.
 """
 
+from __future__ import annotations
+
 import json
+import os
+import shutil
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
+
+from .market_calendar import now_ist
 
 
 class TradeLedger:
     def __init__(self, path: str = "data/trade_ledger.jsonl"):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._session_id: Optional[str] = None
+        self._last_fsync = 0.0
 
-    def record(self, event_type: str, payload: Dict[str, Any]):
-        event = {
+    def set_session_id(self, session_id: str) -> None:
+        self._session_id = session_id
+
+    @property
+    def session_id(self) -> Optional[str]:
+        return self._session_id
+
+    def archive_current(self, reason: str = "rotate") -> Optional[Path]:
+        """Move current ledger to archive/ before optional clear."""
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return None
+        archive_dir = self.path.parent / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        stamp = now_ist().strftime("%Y%m%d_%H%M%S")
+        dest = archive_dir / f"trade_ledger_{stamp}_{reason}.jsonl"
+        shutil.move(str(self.path), str(dest))
+        return dest
+
+    def record(self, event_type: str, payload: Dict[str, Any]) -> None:
+        event: Dict[str, Any] = {
             "ts": time.time(),
             "event_type": event_type,
             "payload": payload,
         }
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, default=str) + "\n")
+        if self._session_id:
+            event["session_id"] = self._session_id
+        event["date_ist"] = now_ist().strftime("%Y-%m-%d")
 
-    def tail(self, n: int = 50):
+        line = json.dumps(event, default=str) + "\n"
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.flush()
+            now = time.time()
+            if now - self._last_fsync >= 2.0:
+                os.fsync(handle.fileno())
+                self._last_fsync = now
+
+    def tail(self, n: int = 50) -> List[Dict[str, Any]]:
+        if not self.path.exists() or n <= 0:
+            return []
+        n = min(n, 5000)
+        try:
+            with self.path.open("rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                if size == 0:
+                    return []
+                block = min(size, max(65536, n * 512))
+                handle.seek(max(0, size - block))
+                chunk = handle.read().decode("utf-8", errors="replace")
+            lines = [ln for ln in chunk.splitlines() if ln.strip()][-n:]
+            return [json.loads(ln) for ln in lines]
+        except Exception:
+            return []
+
+    def read_events(
+        self,
+        *,
+        limit: int = 200,
+        date_ist: Optional[str] = None,
+        event_types: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Read ledger newest-first with optional date/type filters."""
         if not self.path.exists():
             return []
-        lines = self.path.read_text().strip().splitlines()[-n:]
-        return [json.loads(l) for l in lines]
+        limit = min(max(1, limit), 10000)
+        matched: List[Dict[str, Any]] = []
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if date_ist and event.get("date_ist") != date_ist:
+                        continue
+                    if event_types and event.get("event_type") not in event_types:
+                        continue
+                    matched.append(event)
+            return list(reversed(matched[-limit:]))
+        except Exception:
+            return []
+
+    def event_count(self) -> int:
+        if not self.path.exists():
+            return 0
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                return sum(1 for line in handle if line.strip())
+        except Exception:
+            return 0
 
 
 trade_ledger = TradeLedger()

@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import pandas as pd
 import numpy as np
 from backtesting.backtester import Backtester, BaseBacktestStrategy
-from backtesting.costs import TransactionCostModel, CostConfig
+from backtesting.costs import TransactionCostModel, CostConfig, NIFTY_LOT_SIZE_2026
 
 
 class SimpleBreakoutStrategy(BaseBacktestStrategy):
@@ -87,7 +87,7 @@ if __name__ == "__main__":
         brokerage_per_order=20.0,
         other_charges_per_lot_round_turn=45.0,
         default_slippage_points=4.0,   # slightly conservative for generated data
-        lot_size=75,
+        lot_size=NIFTY_LOT_SIZE_2026,
     ))
     backtester = Backtester(strategy, initial_capital=1_000_000, cost_model=cost_model)
     results = backtester.run(data)

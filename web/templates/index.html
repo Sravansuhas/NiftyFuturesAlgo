@@ -116,6 +116,13 @@
                 <span class="text-[10px] text-gray-400 font-medium">API</span>
             </div>
 
+            <!-- React dashboard (2026 UI) -->
+            <a href="/ui/"
+               class="inline-flex items-center gap-x-2 px-4 py-1.5 bg-indigo-600/90 hover:bg-indigo-500 active:bg-indigo-700 transition rounded-2xl font-semibold text-sm shadow-lg shadow-indigo-900/30">
+                <i class="fa-solid fa-gauge-high"></i>
+                <span>NEW DASHBOARD</span>
+            </a>
+
             <!-- Prominent Backtest Lab Button -->
             <a href="/backtest" 
                class="inline-flex items-center gap-x-2 px-5 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 transition rounded-2xl font-semibold text-sm shadow-lg shadow-emerald-900/30">
@@ -515,6 +522,86 @@
                 </div>
                 <div class="h-64">
                     <canvas id="equity-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- Agent Insights (Phase 2 intelligence loop) -->
+            <div class="panel rounded-3xl p-5 xl:col-span-3" id="agent-insights-panel">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-x-2">
+                        <i class="fa-solid fa-brain text-cyan-400"></i>
+                        <span class="section-title">AGENT INSIGHTS</span>
+                    </div>
+                    <div class="flex items-center gap-x-2">
+                        <span id="agent-deploy-pill" class="text-[10px] px-2 py-0.5 rounded-full border border-gray-700 text-gray-400">—</span>
+                        <button id="agent-refresh-btn" type="button"
+                                class="text-[10px] px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">
+                            Refresh
+                        </button>
+                        <button id="agent-brief-btn" type="button"
+                                class="text-[10px] px-2 py-1 rounded bg-cyan-900/40 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-800/50">
+                            Generate Brief
+                        </button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                    <div class="bg-[#0a0c12] rounded-2xl p-3 border border-gray-800">
+                        <div class="text-[10px] text-gray-500 mb-1">SESSION POSTURE</div>
+                        <div id="agent-posture" class="font-mono text-gray-300 space-y-0.5">Loading…</div>
+                    </div>
+                    <div class="bg-[#0a0c12] rounded-2xl p-3 border border-gray-800">
+                        <div class="text-[10px] text-gray-500 mb-1">LEARNING DE-RISK (≤1.0×)</div>
+                        <div id="agent-learning" class="font-mono text-gray-300 space-y-0.5">Loading…</div>
+                    </div>
+                    <div class="bg-[#0a0c12] rounded-2xl p-3 border border-gray-800">
+                        <div class="text-[10px] text-gray-500 mb-1">PROMOTION / WFA</div>
+                        <div id="agent-promotion" class="font-mono text-gray-300 space-y-0.5">Loading…</div>
+                    </div>
+                </div>
+                <div id="agent-warnings" class="mt-3 text-[10px] text-amber-400/90 font-mono hidden"></div>
+            </div>
+
+            <!-- Continuous Improvement (Phase 4C) -->
+            <div class="panel rounded-3xl p-5 xl:col-span-3" id="improvement-panel">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-x-2">
+                        <i class="fa-solid fa-arrows-rotate text-violet-400"></i>
+                        <span class="section-title">CONTINUOUS IMPROVEMENT</span>
+                    </div>
+                    <div class="flex items-center gap-x-2">
+                        <span id="improvement-proposals-pill" class="text-[10px] px-2 py-0.5 rounded-full border border-gray-700 text-gray-400">— pending</span>
+                        <button id="improvement-refresh-btn" type="button"
+                                class="text-[10px] px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">
+                            Refresh
+                        </button>
+                        <button id="improvement-weekly-btn" type="button"
+                                class="text-[10px] px-2 py-1 rounded bg-violet-900/40 hover:bg-violet-900/60 text-violet-300 border border-violet-800/50">
+                            Generate Weekly Report
+                        </button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                    <div class="bg-[#0a0c12] rounded-2xl p-3 border border-gray-800">
+                        <div class="text-[10px] text-gray-500 mb-1">DAILY SESSION QUALITY</div>
+                        <div class="flex items-baseline gap-x-2 mb-1">
+                            <span id="improvement-daily-score" class="font-mono text-2xl font-semibold text-violet-300">—</span>
+                            <span id="improvement-daily-grade" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">—</span>
+                        </div>
+                        <div id="improvement-daily-detail" class="font-mono text-gray-400 space-y-0.5">Loading…</div>
+                    </div>
+                    <div class="bg-[#0a0c12] rounded-2xl p-3 border border-gray-800">
+                        <div class="text-[10px] text-gray-500 mb-1">WEEKLY WFA + SESSIONS</div>
+                        <div id="improvement-weekly-summary" class="font-mono text-gray-300 space-y-0.5">Loading…</div>
+                    </div>
+                    <div class="bg-[#0a0c12] rounded-2xl p-3 border border-gray-800">
+                        <div class="text-[10px] text-gray-500 mb-1">FILL LEARNING + PROPOSALS</div>
+                        <div id="improvement-fill-proposals" class="font-mono text-gray-300 space-y-0.5">Loading…</div>
+                    </div>
+                </div>
+                <div id="improvement-founder-note" class="mt-3 text-[10px] text-violet-300/80 font-mono">
+                    Founder actions: run <span class="underline cursor-pointer" title="python scripts/fo_daily_review.py">fo-daily-review</span> after sessions,
+                    <span class="underline cursor-pointer" title="python scripts/fo_weekly_earn_report.py">fo-weekly-earn-report</span> weekly —
+                    proposals require <code class="text-gray-500">confirmed: true</code> before manifest apply.
                 </div>
             </div>
 
@@ -1114,6 +1201,187 @@
 
             // Stunning live market rail (the thing users complained was missing)
             startMarketRail();
+            initAgentInsights();
+            initContinuousImprovement();
+        }
+
+        async function loadAgentInsights() {
+            const postureEl = document.getElementById('agent-posture');
+            const learningEl = document.getElementById('agent-learning');
+            const promoEl = document.getElementById('agent-promotion');
+            const pillEl = document.getElementById('agent-deploy-pill');
+            const warnEl = document.getElementById('agent-warnings');
+            if (!postureEl) return;
+
+            try {
+                const res = await fetch('/api/agent/insights');
+                const data = await res.json();
+                if (data.error) {
+                    postureEl.textContent = data.error;
+                    return;
+                }
+
+                const posture = data.posture || {};
+                postureEl.innerHTML = [
+                    `caution: ${posture.caution_level || '—'}`,
+                    `max trades/day: ${posture.recommended_max_trades_per_day ?? '—'}`,
+                    `buffer: ${posture.breakout_buffer_bias || '—'}`,
+                    `brief: ${data.brief_date || '—'}`,
+                ].map(l => `<div>${l}</div>`).join('');
+
+                const learning = data.learning_multipliers || {};
+                learningEl.innerHTML = ['NIFTY', 'BANKNIFTY', 'SENSEX'].map(idx => {
+                    const row = learning[idx] || {};
+                    const mult = row.multiplier != null ? row.multiplier.toFixed(2) : '—';
+                    return `<div>${idx}: ${mult}×</div>`;
+                }).join('');
+
+                const promo = data.promotion_status || {};
+                promoEl.innerHTML = ['NIFTY', 'BANKNIFTY', 'SENSEX'].map(idx => {
+                    const row = promo[idx] || {};
+                    const st = row.status || 'unknown';
+                    const mark = row.passed ? '✓' : '✗';
+                    return `<div>${idx}: ${mark} ${st}</div>`;
+                }).join('');
+
+                if (pillEl) {
+                    const ready = data.deploy_ready;
+                    pillEl.textContent = `${(data.deploy_mode || 'paper').toUpperCase()} · ${ready ? 'DEPLOY OK' : 'BLOCKED'}`;
+                    pillEl.className = ready
+                        ? 'text-[10px] px-2 py-0.5 rounded-full border border-emerald-800/60 text-emerald-400 bg-emerald-900/20'
+                        : 'text-[10px] px-2 py-0.5 rounded-full border border-red-800/60 text-red-400 bg-red-900/20';
+                }
+
+                if (warnEl) {
+                    const warns = data.warnings || [];
+                    if (warns.length) {
+                        warnEl.classList.remove('hidden');
+                        warnEl.textContent = warns.slice(0, 4).map(w => `• ${w}`).join('  ');
+                    } else {
+                        warnEl.classList.add('hidden');
+                    }
+                }
+            } catch (e) {
+                postureEl.textContent = 'Agent insights unavailable';
+            }
+        }
+
+        function initAgentInsights() {
+            loadAgentInsights();
+            const refreshBtn = document.getElementById('agent-refresh-btn');
+            const briefBtn = document.getElementById('agent-brief-btn');
+            if (refreshBtn) refreshBtn.addEventListener('click', loadAgentInsights);
+            if (briefBtn) {
+                briefBtn.addEventListener('click', async () => {
+                    briefBtn.disabled = true;
+                    try {
+                        await fetch('/api/agent/brief/generate', { method: 'POST' });
+                        await loadAgentInsights();
+                    } finally {
+                        briefBtn.disabled = false;
+                    }
+                });
+            }
+            setInterval(loadAgentInsights, 120000);
+        }
+
+        async function loadContinuousImprovement() {
+            const scoreEl = document.getElementById('improvement-daily-score');
+            const gradeEl = document.getElementById('improvement-daily-grade');
+            const dailyEl = document.getElementById('improvement-daily-detail');
+            const weeklyEl = document.getElementById('improvement-weekly-summary');
+            const fillEl = document.getElementById('improvement-fill-proposals');
+            const pillEl = document.getElementById('improvement-proposals-pill');
+            if (!scoreEl) return;
+
+            try {
+                const [dailyRes, weeklyRes, proposalsRes, fillRes] = await Promise.all([
+                    fetch('/api/improvement/daily'),
+                    fetch('/api/improvement/weekly'),
+                    fetch('/api/improvement/proposals'),
+                    fetch('/api/improvement/fill-learning'),
+                ]);
+                const daily = await dailyRes.json();
+                const weekly = await weeklyRes.json();
+                const proposals = await proposalsRes.json();
+                const fill = await fillRes.json();
+
+                const report = daily.report || {};
+                const qScore = report.quality_score;
+                scoreEl.textContent = qScore != null ? qScore : '—';
+                scoreEl.className = qScore >= 70
+                    ? 'font-mono text-2xl font-semibold text-emerald-300'
+                    : qScore >= 55
+                        ? 'font-mono text-2xl font-semibold text-amber-300'
+                        : 'font-mono text-2xl font-semibold text-violet-300';
+                if (gradeEl) {
+                    gradeEl.textContent = report.quality_grade || '—';
+                }
+                if (dailyEl) {
+                    const risk = report.risk_snapshot || {};
+                    const metrics = report.event_metrics || {};
+                    dailyEl.innerHTML = [
+                        `date: ${report.date_ist || '—'}`,
+                        `pnl: ₹${(risk.daily_pnl ?? 0).toLocaleString()}`,
+                        `trades: ${risk.trades_today ?? 0}`,
+                        `signals: ${metrics.signals_accepted ?? 0} acc / ${metrics.signals_rejected ?? 0} rej`,
+                    ].map(l => `<div>${l}</div>`).join('');
+                }
+
+                const wReport = weekly.report || {};
+                const sess = wReport.session_summary || {};
+                const wfa = wReport.wfa_summary || {};
+                if (weeklyEl) {
+                    const promoted = Object.entries(wfa.indices || {})
+                        .filter(([, v]) => v && v.passed)
+                        .map(([k]) => k);
+                    weeklyEl.innerHTML = [
+                        `week: ${wReport.week_start || '—'} → ${wReport.week_end || '—'}`,
+                        `sessions: ${sess.reports_found ?? 0} | avg score: ${sess.avg_quality_score ?? '—'}`,
+                        `week P&L: ₹${(sess.total_pnl_rs ?? 0).toLocaleString()}`,
+                        `WFA promoted: ${promoted.length ? promoted.join(', ') : 'none'}`,
+                    ].map(l => `<div>${l}</div>`).join('');
+                }
+
+                const pending = proposals.pending_count ?? proposals.count ?? 0;
+                if (pillEl) {
+                    pillEl.textContent = `${pending} pending proposal${pending === 1 ? '' : 's'}`;
+                    pillEl.className = pending > 0
+                        ? 'text-[10px] px-2 py-0.5 rounded-full border border-amber-800/60 text-amber-400 bg-amber-900/20'
+                        : 'text-[10px] px-2 py-0.5 rounded-full border border-emerald-800/60 text-emerald-400 bg-emerald-900/20';
+                }
+                const snap = fill.snapshot || {};
+                const fillSummary = snap.summary || {};
+                if (fillEl) {
+                    fillEl.innerHTML = [
+                        `fills analyzed: ${fillSummary.fills_analyzed ?? 0}`,
+                        `est costs: ₹${(fillSummary.est_total_cost_rs ?? 0).toLocaleString()}`,
+                        `proposals pending: ${pending}`,
+                        (snap.documentation_notes || [])[0] || '—',
+                    ].map(l => `<div>${l}</div>`).join('');
+                }
+            } catch (e) {
+                if (dailyEl) dailyEl.textContent = 'Continuous improvement unavailable';
+            }
+        }
+
+        function initContinuousImprovement() {
+            loadContinuousImprovement();
+            const refreshBtn = document.getElementById('improvement-refresh-btn');
+            const weeklyBtn = document.getElementById('improvement-weekly-btn');
+            if (refreshBtn) refreshBtn.addEventListener('click', loadContinuousImprovement);
+            if (weeklyBtn) {
+                weeklyBtn.addEventListener('click', async () => {
+                    weeklyBtn.disabled = true;
+                    try {
+                        await fetch('/api/improvement/weekly/generate', { method: 'POST' });
+                        await loadContinuousImprovement();
+                    } finally {
+                        weeklyBtn.disabled = false;
+                    }
+                });
+            }
+            setInterval(loadContinuousImprovement, 180000);
         }
 
         let equityChart = null;

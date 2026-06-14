@@ -152,15 +152,18 @@ We already have `grok_com_github` connected (43 tools: create_issue, create_pull
 
 Skills in `.grok/skills/` (project) override user-scope ones.
 
+**Current Status (June 2026):** Initial activation complete. `fo-market-brief` and `fo-failure-pattern-miner` skeletons exist and are registered. Next: make the brief skill actually read `backtest_memory` + produce output, then wire it into the dashboard "Agent Insights" area. All future skills must follow the same `/create-skill` or manual SKILL.md process.
+
 ---
 
 ## Getting Started as Contributor or Founder
 
 1. Read VISION_AND_STRATEGY.md + this file.
 2. Run the existing system (`python run.py`) and explore the dashboard + backtest lab.
-3. For any change: start in plan mode or use /design.
-4. For implementation: always use /implement with appropriate effort.
-5. When you discover a repeatable process: use /skillify or create-skill to capture it.
+3. **For closed-market development**: Use `python run.py --dev` (see `docs/DEV_TESTING_GUIDE.md`).
+4. For any change: start in plan mode or use /design.
+5. For implementation: always use /implement with appropriate effort.
+6. When you discover a repeatable process: use /skillify or create-skill to capture it.
 
 ---
 

@@ -32,8 +32,14 @@ class TradingStateMachine:
             self._state = new_state
             print(f"[STATE MACHINE] Transition: {old_state.value} -> {new_state.value}")
     
-    def is_trading_allowed(self):
+    def is_trading_allowed(self, is_exit: bool = False):
         allowed = {SystemState.TRADING_ENABLED, SystemState.PAPER_MODE, SystemState.LIVE_MODE}
+        if is_exit:
+            allowed = allowed | {
+                SystemState.EMERGENCY_HALT,
+                SystemState.RECONCILIATION_FAILED,
+                SystemState.CIRCUIT_BREAKER_TRIGGERED,
+            }
         return self._state in allowed
 
     def is_paper_or_live(self):
