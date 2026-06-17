@@ -1,4 +1,4 @@
-# NiftyFuturesAlgo — Closed-market dev startup (Windows)
+# Aegis — Closed-market dev startup (Windows)
 # Usage: .\scripts\start_dev.ps1
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -6,7 +6,7 @@ Set-Location $ProjectRoot
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " NiftyFuturesAlgo — Dev Mode Startup" -ForegroundColor Cyan
+Write-Host " Aegis — Dev Mode Startup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "This starts the TRADING ENGINE (port 8050)." -ForegroundColor Yellow

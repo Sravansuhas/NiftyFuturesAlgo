@@ -42,6 +42,9 @@ services:
     environment:
       # This helps make the mode obvious in logs
       - TRADING_MODE=${TRADING_MODE:-paper}
+      - DATABASE_URL=postgresql://trading:trading123@postgres:5432/trading
+      - PERSISTENCE_BACKEND=${PERSISTENCE_BACKEND:-jsonl}
+      - ALGO_ID=${ALGO_ID:-AEGIS}
     ports:
       - "5000:5000"
     depends_on:

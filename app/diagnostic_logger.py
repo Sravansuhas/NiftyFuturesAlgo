@@ -1,5 +1,5 @@
 """
-Diagnostic Logger for NiftyFuturesAlgo
+Diagnostic Logger for Aegis
 
 Best practice for live algo trading observability.
 
@@ -25,6 +25,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from app.branding import LOG_NAMESPACE
 
 
 class DiagnosticLogger:
@@ -56,7 +58,7 @@ class DiagnosticLogger:
         self.log_file_path = logs_dir / f"run_{self._run_id}.log"
 
         # Root diagnostic logger — capture everything; handlers filter output
-        self.logger = logging.getLogger("NiftyFuturesAlgo.Diag")
+        self.logger = logging.getLogger(f"{LOG_NAMESPACE}.Diag")
         self.logger.setLevel(logging.DEBUG)
 
         # Remove existing handlers to avoid duplicates on re-init

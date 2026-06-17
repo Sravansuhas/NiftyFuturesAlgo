@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -64,6 +65,27 @@ class RiskGatekeeperTests(unittest.TestCase):
         self.assertEqual(self.risk.position["quantity"], 65)
         self.assertEqual(self.risk.position["avg_price"], 24500)
 
+    def test_multi_symbol_dry_run_skips_single_symbol_accounting(self):
+        """Options IC legs use multi_symbol_entry — must not block on leg 2+."""
+        legs = [
+            ("NIFTY26JUN24500CE", "SELL"),
+            ("NIFTY26JUN24600CE", "BUY"),
+            ("NIFTY26JUN24400PE", "SELL"),
+            ("NIFTY26JUN24300PE", "BUY"),
+        ]
+        for symbol, side in legs:
+            result = self.risk.place_guarded_order(
+                kite=FakeKite(),
+                symbol=symbol,
+                quantity=65,
+                transaction_type=side,
+                dry_run=True,
+                multi_symbol_entry=True,
+            )
+            self.assertTrue(result["success"], f"{symbol} failed: {result.get('message')}")
+        self.assertEqual(self.risk.position["quantity"], 0)
+        self.assertEqual(self.risk.trades_today, 0)
+
     def test_live_order_submission_does_not_assume_fill(self):
         live_config = RiskConfig(force_dry_run=False, lot_size=65)
         risk = RiskGatekeeper(config=live_config)
@@ -123,6 +145,56 @@ class RiskGatekeeperTests(unittest.TestCase):
         q = self.risk.calculate_order_quantity(24500, 24499.5)  # <1pt
         self.assertTrue(q >= 65 and q <= 300)
         self.assertEqual(q % 65, 0)
+
+    def test_single_loss_does_not_reduce_size(self):
+        self.risk.update_daily_loss(-1000)
+        self.assertEqual(self.risk.calculate_order_quantity(24500, 24475), 195)
+
+    def test_win_resets_loss_streak_multiplier(self):
+        self.risk.update_daily_loss(-1000)
+        self.risk.update_daily_loss(-1000)
+        self.risk.update_daily_loss(500)
+        self.assertEqual(self.risk.calculate_order_quantity(24500, 24475), 195)
+
+    def test_capital_zero_returns_one_lot(self):
+        self.risk.capital = 0
+        self.assertEqual(self.risk.calculate_order_quantity(24500, 24475), 65)
+
+    def test_live_order_uses_algo_id_tag(self):
+        live_config = RiskConfig(force_dry_run=False, lot_size=65)
+        risk = RiskGatekeeper(config=live_config)
+        fake = FakeKite()
+        with patch.dict(os.environ, {"ALGO_ID": "MYALGO123"}), \
+             patch("app.token_manager.live_trading_token_ok", return_value=True):
+            result = risk.place_guarded_order(
+                kite=fake,
+                symbol="NIFTY26JUNFUT",
+                quantity=65,
+                transaction_type="BUY",
+                dry_run=False,
+            )
+        self.assertTrue(result["success"])
+        self.assertEqual(fake.orders[0]["tag"], "MYALGO123")
+
+    def test_burst_rate_limit_blocks_live_order(self):
+        live_config = RiskConfig(force_dry_run=False, lot_size=65)
+        risk = RiskGatekeeper(config=live_config)
+        fake = FakeKite()
+        from app.kite_rate_limit import order_burst_tracker
+
+        order_burst_tracker._max = 0
+        with patch("app.token_manager.live_trading_token_ok", return_value=True):
+            result = risk.place_guarded_order(
+                kite=fake,
+                symbol="NIFTY26JUNFUT",
+                quantity=65,
+                transaction_type="BUY",
+                dry_run=False,
+            )
+        order_burst_tracker._max = 80
+        self.assertFalse(result["success"])
+        self.assertIn("rate limit", result["message"].lower())
+        self.assertEqual(len(fake.orders), 0)
 
 
 # --- Cost model tests (pure, no broker) ---

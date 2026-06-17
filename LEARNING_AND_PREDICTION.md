@@ -1,4 +1,4 @@
-# Learning & Prediction — The "Learn & Earn" Engine
+# Aegis — Learning & Prediction — The "Learn & Earn" Engine
 
 **Purpose**: Defines how the system actually learns from candles, real outcomes, public failure data, and agent reasoning — and how (lightweight, gated) prediction feeds the sacred risk layer without ever replacing it.
 

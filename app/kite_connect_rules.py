@@ -20,6 +20,8 @@ RATE_LIMIT_QUOTE_RPS = 1.0
 RATE_LIMIT_HISTORICAL_RPS = 3.0
 RATE_LIMIT_DEFAULT_RPS = 10.0
 RATE_LIMIT_ORDER_RPS = 10.0
+# Safe rolling window — SEBI/broker burst guard (conservative retail target)
+RATE_LIMIT_ORDERS_PER_10S = 80
 
 # Token flush window (IST) — generate access token AFTER this window
 TOKEN_FLUSH_START = dt_time(5, 30)

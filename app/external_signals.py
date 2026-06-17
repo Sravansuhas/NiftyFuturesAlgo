@@ -14,10 +14,38 @@ from pathlib import Path
 from time import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from .instruments_manager import ltp_key
 from .market_calendar import now_ist
 from .options_pnl import enrich_side_pnl, get_index_lot_size, summarize_sheet_pnl
 
+_PREMIUMS_CACHE: Dict[str, Any] = {"payload": None, "ts": 0.0, "sheet_date": None}
+_PREMIUMS_CACHE_SEC = 20.0
+
 INDICES = ("SENSEX", "NIFTY", "BANKNIFTY")
+
+# Six premium legs in sheet entry order (SENSEX → NIFTY → BANKNIFTY, CE then PE).
+OPTION_LEG_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("SENSEX", "call", "CE"),
+    ("SENSEX", "put", "PE"),
+    ("NIFTY", "call", "CE"),
+    ("NIFTY", "put", "PE"),
+    ("BANKNIFTY", "call", "CE"),
+    ("BANKNIFTY", "put", "PE"),
+)
+
+
+def leg_key(index: str, leg: str) -> str:
+    """Stable leg id, e.g. NIFTY + call → NIFTY_CE."""
+    opt = "CE" if leg == "call" else "PE"
+    return f"{index.upper()}_{opt}"
+
+
+def iter_legs(sheet: Dict[str, Any]):
+    """Yield (leg_id, index, leg, option_type, side_dict) for all six chart legs."""
+    for index, leg, option_type in OPTION_LEG_SPECS:
+        block = (sheet.get("indices") or {}).get(index) or {}
+        side = block.get(leg) or {}
+        yield leg_key(index, leg), index, leg, option_type, side
 
 DISPLAY_NAMES = {
     "NIFTY": "NIFTY 50",
@@ -252,27 +280,28 @@ def apply_pnl_to_sheet(sheet: Dict[str, Any], premiums: Optional[Dict[str, Any]]
     for idx in INDICES:
         block = out.get("indices", {}).get(idx, {})
         live_row = (live.get("indices") or {}).get(idx) or {}
-        strike = block.get("call", {}).get("strike") or block.get("put", {}).get("strike")
-        expiry = live_row.get("expiry")
-        if not expiry and strike and instruments_manager.kite:
-            exp = options_chain_manager.resolve_expiry(idx)
-            expiry = exp.isoformat() if exp else None
-
-        lot_size = get_index_lot_size(idx)
-        if strike and expiry and instruments_manager.kite:
-            inst = instruments_manager.get_option_instruments(idx, "CE", expiry, float(strike))
-            lot_size = get_index_lot_size(idx, inst)
 
         for leg, opt_type in (("call", "CE"), ("put", "PE")):
             side = block.get(leg) or {}
             if not side.get("strike") and side.get("entry") is None:
                 continue
-            ltp_key = f"{leg}_ltp"
-            ltp = live_row.get(ltp_key) if live_row.get(ltp_key) is not None else side.get("last_ltp")
-            if strike and expiry and instruments_manager.kite:
-                inst = instruments_manager.get_option_instruments(idx, opt_type, expiry, float(strike))
+
+            leg_strike = side.get("strike")
+            expiry = live_row.get("expiry")
+            if not expiry and leg_strike and instruments_manager.kite:
+                exp = options_chain_manager.resolve_expiry(idx)
+                expiry = exp.isoformat() if exp else None
+
+            lot_size = get_index_lot_size(idx)
+            if leg_strike and expiry and instruments_manager.kite:
+                inst = instruments_manager.get_option_instruments(
+                    idx, opt_type, expiry, float(leg_strike),
+                )
                 if inst:
                     lot_size = get_index_lot_size(idx, inst)
+
+            ltp_key = f"{leg}_ltp"
+            ltp = live_row.get(ltp_key) if live_row.get(ltp_key) is not None else side.get("last_ltp")
             block[leg] = enrich_side_pnl(side, ltp=ltp, lot_size=lot_size)
         out["indices"][idx] = block
 
@@ -316,8 +345,9 @@ def get_today_options_mtm(force: bool = False) -> Dict[str, Any]:
 
 
 def bust_options_mtm_cache() -> None:
-    global _MTM_CACHE
+    global _MTM_CACHE, _PREMIUMS_CACHE
     _MTM_CACHE = {"ts": 0.0, "payload": None}
+    _PREMIUMS_CACHE = {"payload": None, "ts": 0.0, "sheet_date": None}
 
 
 class ExternalSignalsStore:
@@ -388,9 +418,19 @@ external_signals_store = ExternalSignalsStore()
 
 
 def fetch_live_premiums(sheet: Dict[str, Any]) -> Dict[str, Any]:
-    """Kite LTP for entered strikes (CE/PE premiums)."""
+    """Kite LTP for entered strikes (CE/PE premiums) — single batched quote call."""
     from .instruments_manager import instruments_manager
     from .options_chain import options_chain_manager
+
+    sheet_date = str(sheet.get("date") or "")[:10]
+    now = time()
+    cached = _PREMIUMS_CACHE.get("payload")
+    if (
+        cached
+        and _PREMIUMS_CACHE.get("sheet_date") == sheet_date
+        and now - float(_PREMIUMS_CACHE.get("ts") or 0) < _PREMIUMS_CACHE_SEC
+    ):
+        return cached
 
     kite = instruments_manager.kite
     if not kite:
@@ -398,6 +438,8 @@ def fetch_live_premiums(sheet: Dict[str, Any]) -> Dict[str, Any]:
 
     options_chain_manager.bind(kite)
     out: Dict[str, Any] = {"available": True, "indices": {}}
+    quote_keys: List[str] = []
+    leg_refs: List[Tuple[str, str, str, str]] = []
 
     for idx in INDICES:
         block = sheet.get("indices", {}).get(idx, {})
@@ -440,10 +482,18 @@ def fetch_live_premiums(sheet: Dict[str, Any]) -> Dict[str, Any]:
             row[f"{side}_symbol"] = sym
             row[f"{side}_strike"] = leg_strike
             if sym:
-                prem = instruments_manager.fetch_ltp(sym, exchange)
-                row[f"{side}_ltp"] = prem
+                key = ltp_key(sym, exchange)
+                quote_keys.append(key)
+                leg_refs.append((idx, side, key, sym))
         out["indices"][idx] = row
 
+    prices = instruments_manager.fetch_ltp_batch(quote_keys)
+    for idx, side, key, _sym in leg_refs:
+        prem = prices.get(key)
+        if prem is not None:
+            out["indices"][idx][f"{side}_ltp"] = prem
+
+    _PREMIUMS_CACHE.update({"payload": out, "ts": now, "sheet_date": sheet_date})
     return out
 
 

@@ -612,3 +612,23 @@ def list_available_cached_datasets() -> List[Dict[str, Any]]:
                 "size_kb": round(f.stat().st_size / 1024, 1) if f.exists() else 0,
             })
     return results
+
+
+def best_cache_date_window_for_underlying(underlying: str) -> tuple[datetime, datetime] | None:
+    """
+    Union of all cached parquet date ranges for an index (e.g. NIFTY*).
+    Prefer this over picking a single high-row contract file — expired-month
+    parquets can have more rows but collapse after front-month filtering.
+    """
+    prefix = underlying.upper()
+    datasets = [
+        ds for ds in list_available_cached_datasets()
+        if (ds.get("symbol") or "").upper().startswith(prefix)
+        and ds.get("actual_from") and ds.get("actual_to")
+        and ds.get("actual_from") != "?"
+    ]
+    if not datasets:
+        return None
+    from_dt = min(datetime.strptime(d["actual_from"], "%Y-%m-%d") for d in datasets)
+    to_dt = max(datetime.strptime(d["actual_to"], "%Y-%m-%d") for d in datasets)
+    return from_dt, to_dt

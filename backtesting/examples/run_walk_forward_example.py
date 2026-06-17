@@ -28,12 +28,13 @@ import os
 from backtesting.data_loader import fetch_real_nifty_futures_data
 from backtesting.walk_forward_runner import run_walk_forward
 from backtesting.previous_candle_backtest_strategy import PreviousCandleBacktestStrategy
+from app.branding import PROJECT_NAME
 from backtesting.costs import TransactionCostModel, CostConfig, NIFTY_LOT_SIZE_2026
 
 
 def main():
     print("=" * 80)
-    print("NiftyFuturesAlgo — Real Multi-Month Walk-Forward + Regime Validation")
+    print(f"{PROJECT_NAME} — Real Multi-Month Walk-Forward + Regime Validation")
     print("=" * 80)
 
     load_dotenv()

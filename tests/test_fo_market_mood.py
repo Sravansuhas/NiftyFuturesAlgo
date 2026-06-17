@@ -189,19 +189,33 @@ class FoMarketMoodTests(unittest.TestCase):
         third = self._compute(snap)
         self.assertFalse(third["cached"])
 
-    @patch("app.fo_market_mood.fetch_macro_context", create=True)
-    def test_fetch_macro_cached_ttl(self, mock_fetch):
+    def test_fetch_macro_cached_ttl(self):
         import app.fo_market_mood as mod
+        from unittest.mock import MagicMock
 
         mod._MACRO_CACHE["ts"] = 0.0
         mod._MACRO_CACHE["payload"] = None
-        mock_fetch.return_value = {"vix": {"zone": "normal"}, "fetched_at": "t1"}
 
-        with patch("app.nse_data.fetch_macro_context", mock_fetch):
-            a = fetch_macro_cached(force=True)
-            b = fetch_macro_cached()
+        kite = MagicMock()
+        vix = {"available": True, "level": 14.0, "zone": "normal", "source": "kite_quote"}
+        fii = {
+            "available": True,
+            "fii_net_crores": -1082.18,
+            "dii_net_crores": 5341.29,
+            "flow_bias": "dii_support",
+        }
+
+        with patch("app.instruments_manager.instruments_manager") as mgr:
+            mgr.kite = kite
+            with patch("app.market_context.fetch_india_vix", return_value=vix) as mock_vix:
+                with patch("app.nse_data.fetch_fii_dii_flow", return_value=fii) as mock_fii:
+                    a = fetch_macro_cached(force=True)
+                    b = fetch_macro_cached()
         self.assertEqual(a, b)
-        mock_fetch.assert_called_once()
+        mock_vix.assert_called_once_with(kite=kite)
+        mock_fii.assert_called_once()
+        self.assertEqual(a["vix"], vix)
+        self.assertEqual(a["fii_dii"], fii)
 
 
 if __name__ == "__main__":

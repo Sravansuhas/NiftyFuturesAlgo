@@ -1,4 +1,4 @@
-# NiftyFuturesAlgo — Founder Vision & Strategy (v1.0)
+# Aegis — Founder Vision & Strategy (v1.0)
 
 **Status**: Vision locked — May 2026. This is the canonical reference for what we are building and why. All future work (agents, skills, code, backtests) must align to this.
 
@@ -147,7 +147,7 @@ These are the first patterns the Failure Miner agent and knowledge base must enc
 - All new agents/skills live in project `.grok/skills/fo-*` (project scope) or user scope. Use create-skill for scaffolding. Daily ops use slash commands or TUI.
 
 **Human + Deployment Layer**:
-- Existing world-class dashboard ("Algo Lab") extended with agent insights and knowledge browser.
+- Existing world-class dashboard ("Aegis") extended with agent insights and knowledge browser.
 - Custom skills: /fo-safe-deploy, /morning-brief, /failure-pattern-refresh, /propose-and-validate-strategy.
 - Explicit human sign-off gates + kill switches.
 

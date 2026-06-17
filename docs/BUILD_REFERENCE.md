@@ -1,4 +1,4 @@
-# Build Reference — Major Steps & How Things Work
+# Aegis — Build Reference — Major Steps & How Things Work
 
 **Purpose**: Single reference doc for everything major built so far — especially the **live React frontend**, **FastAPI backend wiring**, and **Kite auto-login**. Use this when you forget how to run something or why a piece exists.
 
@@ -30,7 +30,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  React Frontend (Vite)          http://localhost:5173             │
-│  AG Quant UI — Dashboard, Options Sheet, Strategies, Risk, etc. │
+│  Aegis UI — Dashboard, Options Sheet, Strategies, Risk, etc. │
 └────────────────────────────┬────────────────────────────────────┘
                              │  /api/* proxied in dev
                              ▼
@@ -522,7 +522,7 @@ Not yet: options Greeks, multi-leg strategies, colocation, ML alpha — those ar
 | Token expires 6 AM IST | Auto-login (`app/kite_auth.py`) |
 | Lot sizes change | `instruments_manager.get_active_future().lot_size` |
 | Opening 30 min toxic | `is_safe_trading_window()` + FO_OPENING_AUCTION_WINDOW de-risk |
-| Expiry gamma | `is_expiry_day()` caution + intelligence_loop posture |
+| Expiry gamma | Calendar cutoff (Level 0/1/2) + VIX proxy — **not** portfolio net gamma yet. See `docs/EXPIRY_GAMMA_CAUTION.md` |
 | RBI / Budget event risk | `FO_EVENT_CALENDAR` — block 4h before (`data/market_events.json`) |
 | Chop / fake breakouts | `FO_CHOP_VETO` + wider breakout buffer in ranging |
 | Death by 1000 cuts | `FO_ROLLING_EDGE_HALT` — halt if last 10 trades expectancy < 0 |

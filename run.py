@@ -1,5 +1,5 @@
 """
-NiftyFuturesAlgo - Single Command Runner
+Aegis - Single Command Runner
 
 This is the recommended way to run the entire system.
 
@@ -26,16 +26,28 @@ This is lightweight, safe, and the current best practice for this project.
 """
 
 import sys
+import asyncio
+import json
+import socket
 import threading
 import signal
 import time
 import os
 import argparse
+import urllib.request
 from pathlib import Path
 from datetime import datetime
 
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8050"))
+DASHBOARD_PROBE_HOST = "127.0.0.1"
+
+# Windows ProactorEventLoop + uvicorn accept() can raise WinError 64 and kill :8050.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 # Add project root to path
-project_root = Path(__file__).resolve()
+project_root = Path(__file__).resolve().parent
 sys.path.insert(0, str(project_root))
 
 # Shared shutdown event for graceful termination
@@ -45,6 +57,7 @@ shutdown_event = threading.Event()
 import app.main as main_module
 main_module.shutdown_event = shutdown_event
 
+from app.branding import PROJECT_NAME
 from app.main import main as run_trading_loop
 
 # Import the dashboard
@@ -54,8 +67,58 @@ import uvicorn
 from uvicorn import Config, Server
 
 
+def _frontend_build_stale() -> bool:
+    """True when production UI bundle is missing or older than React source."""
+    root = Path(__file__).resolve().parent
+    dist_index = root / "frontend" / "dist" / "index.html"
+    if not dist_index.exists():
+        return True
+    dist_mtime = dist_index.stat().st_mtime
+    src_root = root / "frontend" / "src"
+    if not src_root.exists():
+        return False
+    newest_src = max(p.stat().st_mtime for p in src_root.rglob("*") if p.is_file())
+    return newest_src > dist_mtime
+
+
+def _ensure_frontend_build(*, force: bool = False) -> None:
+    """Build React UI into frontend/dist when source changed (single-port :8050/ui/)."""
+    if not force and not _frontend_build_stale():
+        return
+    root = Path(__file__).resolve().parent
+    frontend_dir = root / "frontend"
+    if not (frontend_dir / "package.json").exists():
+        return
+    print("[RUNNER] Building Aegis UI (frontend/dist) — source newer than bundle…")
+    import subprocess
+
+    npm = "npm.cmd" if sys.platform == "win32" else "npm"
+    try:
+        subprocess.run(
+            [npm, "run", "build"],
+            cwd=str(frontend_dir),
+            check=True,
+        )
+        print("[RUNNER] UI build complete → http://localhost:8050/ui/settings")
+    except FileNotFoundError:
+        print("[RUNNER] npm not found — skip UI build. Use: cd frontend && npm run dev")
+    except subprocess.CalledProcessError as exc:
+        print(f"[RUNNER] UI build failed (exit {exc.returncode}). Dev fallback: npm run dev → :5173")
+
+
+def _load_portal_trading_controls():
+    """Apply data/trading_controls.json to os.environ before engine starts."""
+    try:
+        from app.trading_controls import apply_runtime_to_environment
+
+        apply_runtime_to_environment()
+    except Exception as exc:
+        print(f"[RUNNER] Trading controls note: {exc}")
+
+
 def start_trading_in_background():
     """Run the main trading loop in a daemon thread."""
+    _load_portal_trading_controls()
     print("[RUNNER] Starting trading engine in background thread...")
     thread = threading.Thread(target=run_trading_loop, daemon=True, name="TradingEngine")
     thread.start()
@@ -64,8 +127,61 @@ def start_trading_in_background():
 
 def start_dashboard(server: Server):
     """Start the FastAPI dashboard using Server for better shutdown control."""
-    print("[RUNNER] Web dashboard live at http://localhost:8050")
+    print(f"[RUNNER] Web dashboard live at http://127.0.0.1:{DASHBOARD_PORT}")
     server.run()
+
+
+def _port_in_use(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((host, port)) == 0
+
+
+def _probe_engine_health() -> dict | None:
+    try:
+        url = f"http://{DASHBOARD_PROBE_HOST}:{DASHBOARD_PORT}/health"
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+
+def _wait_for_api_ready(timeout: float = 20.0) -> bool:
+    """Block until /health responds so the UI does not race a slow engine boot."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _probe_engine_health():
+            print(f"[RUNNER] API ready at http://{DASHBOARD_PROBE_HOST}:{DASHBOARD_PORT}/health")
+            return True
+        time.sleep(0.25)
+    print(f"[RUNNER] WARNING: /health not ready after {timeout:.0f}s — refresh the UI shortly")
+    return False
+
+
+def _guard_single_instance() -> None:
+    """Prevent a second run.py from failing mid-start with WinError 10048."""
+    if not _port_in_use(DASHBOARD_PROBE_HOST, DASHBOARD_PORT):
+        return
+
+    health = _probe_engine_health()
+    if health and health.get("status") == "ok":
+        ready = health.get("engine_ready")
+        print("\n" + "=" * 72)
+        print(f"[RUNNER] Aegis is already running on http://localhost:{DASHBOARD_PORT}")
+        print(f"[RUNNER] /health → ok, engine_ready={ready}")
+        print("[RUNNER] Do not start a second run.py in another terminal.")
+        print("[RUNNER] React dev UI: cd frontend && npm run dev  →  http://localhost:5173/ui/dashboard")
+        print("[RUNNER] Single-port UI: http://localhost:8050/ui/dashboard")
+        print("=" * 72 + "\n")
+        sys.exit(0)
+
+    print("\n" + "=" * 72)
+    print(f"[RUNNER] ERROR: Port {DASHBOARD_PORT} is already in use on {DASHBOARD_HOST}")
+    print("[RUNNER] /health did not respond — another process may own :8050.")
+    print("[RUNNER] Free the port (close the other app) or stop the stale python process:")
+    print("         Get-Process python | Stop-Process   # PowerShell (use with care)")
+    print("=" * 72 + "\n")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
@@ -73,7 +189,7 @@ if __name__ == "__main__":
     # CLOSED-MARKET DEVELOPMENT & TESTING SUPPORT (documented 2026-06)
     # ========================================================================
     parser = argparse.ArgumentParser(
-        description="NiftyFuturesAlgo Unified Runner (paper + dashboard + backtest lab)",
+        description=f"{PROJECT_NAME} Unified Runner (paper + dashboard + backtest lab)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples (especially useful when market is closed):
@@ -203,32 +319,35 @@ See docs/DEV_TESTING_GUIDE.md and PHASE0_DIAGNOSTICS_AND_LOGGING.md for full det
     # Normal startup continues
     # ========================================================================
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S IST")
-    print(f"[RUNNER] NiftyFuturesAlgo starting at {current_time}")
+    print(f"[RUNNER] {PROJECT_NAME} starting at {current_time}")
 
-    # Start trading logic in background
-    trading_thread = start_trading_in_background()
+    from app.startup_checks import run_startup_checks
+    startup_ctx = run_startup_checks()
+    print(
+        f"[RUNNER] Compliance: algo_id={startup_ctx['algo_id']} "
+        f"dry_run={startup_ctx['force_dry_run']} "
+        f"ip={startup_ctx.get('outbound_ip') or 'unknown'}"
+    )
 
-    # Give it a moment to initialize
-    time.sleep(2.5)
+    _guard_single_instance()
+
+    # Build UI before binding :8050 so npm does not delay the API port coming up.
+    _ensure_frontend_build()
 
     frontend_dist = Path(__file__).resolve().parent / "frontend" / "dist"
     if frontend_dist.exists():
-        print("[RUNNER] Algo Lab UI (built): http://localhost:8050/ui/backtest")
+        print("[RUNNER] Aegis UI (built): http://localhost:8050/ui/dashboard")
     else:
-        print("[RUNNER] Algo Lab dev UI: cd frontend && npm run dev  →  http://localhost:5173/ui/backtest")
+        print("[RUNNER] Aegis dev UI: cd frontend && npm run dev  →  http://localhost:5173/ui/dashboard")
     print("[RUNNER] API + legacy dashboard: http://localhost:8050  (Ctrl+C to stop)\n")
-    if dev_mode_activated:
-        print("[RUNNER] Dev testing tips:")
-        print("   • Watch logs/run_*.log for [SIGNAL] PROPOSED_BUT_REJECTED_BY_GATES")
-        print("   • Open http://localhost:8050/ui/backtest for Algo Lab validation runs")
-        print("   • Use Ctrl+C for clean shutdown\n")
 
     dashboard_config = Config(
         app=dashboard_app,
-        host="0.0.0.0",
-        port=8050,
+        host=DASHBOARD_HOST,
+        port=DASHBOARD_PORT,
         log_level="warning",
         access_log=False,
+        loop="asyncio",
     )
     dashboard_server = Server(config=dashboard_config)
 
@@ -237,20 +356,39 @@ See docs/DEV_TESTING_GUIDE.md and PHASE0_DIAGNOSTICS_AND_LOGGING.md for full det
         shutdown_event.set()
         dashboard_server.should_exit = True
 
-    # Register signal handlers
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
 
+    dashboard_thread = threading.Thread(
+        target=start_dashboard,
+        args=(dashboard_server,),
+        daemon=True,
+        name="Dashboard",
+    )
+    dashboard_thread.start()
+    _wait_for_api_ready()
+
+    # Start trading after API is live — avoids "Cannot reach API" while engine warms up.
+    trading_thread = start_trading_in_background()
+
+    if dev_mode_activated:
+        print("[RUNNER] Dev testing tips:")
+        print("   • Watch logs/run_*.log for [SIGNAL] PROPOSED_BUT_REJECTED_BY_GATES")
+        print("   • Open http://localhost:8050/ui/backtest for Aegis validation runs")
+        print("   • Use Ctrl+C for clean shutdown\n")
+
     try:
-        start_dashboard(dashboard_server)
-    except (KeyboardInterrupt, SystemExit):
-        pass
+        while dashboard_thread.is_alive() and not shutdown_event.is_set():
+            dashboard_thread.join(timeout=1.0)
+    except KeyboardInterrupt:
+        handle_shutdown(signal.SIGINT, None)
     except Exception as e:
         if "CancelledError" not in type(e).__name__:
             print(f"[RUNNER] Dashboard error: {e}")
     finally:
         print("[RUNNER] Dashboard stopped. Waiting for trading thread to finish...")
         shutdown_event.set()
-        # Wait for trading thread to react to shutdown_event (it should poll it)
+        dashboard_server.should_exit = True
+        dashboard_thread.join(timeout=5)
         trading_thread.join(timeout=5)
         print("[RUNNER] Shutdown complete.")

@@ -1,4 +1,4 @@
-# Backtest vs Live Strategy — Full Audit & Action Plan
+# Aegis — Backtest vs Live Strategy — Full Audit & Action Plan
 
 **Generated:** 2026-06-10 (Wednesday)  
 **Last updated:** 2026-06-10 — Phases A–D + E1 implemented  
@@ -34,13 +34,13 @@ flowchart TB
         RG -->|FORCE_DRY_RUN=true| Paper[Simulated orders only]
     end
 
-    subgraph Research["Algo Lab / Backtest (dashboard → walk_forward_runner)"]
+    subgraph Research["Aegis / Backtest (dashboard → walk_forward_runner)"]
         Data[Parquet cache / Kite fetch / Synthetic]
         WFA[Walk-Forward Optimization]
         BT[Backtester engine]
         BStrat[PreviousCandleBacktestStrategy]
         Mem[backtest_memory.jsonl]
-        UI[React Algo Lab /backtest]
+        UI[React Aegis UI /backtest]
         Data --> WFA --> BT --> BStrat
         WFA --> Mem
         UI -->|POST /api/backtest/run| WFA
@@ -49,7 +49,7 @@ flowchart TB
     Live -.->|NOT shared code| Research
 ```
 
-| Dimension | **Backtest (Algo Lab)** | **Live Strategy (Paper Engine)** |
+| Dimension | **Backtest (Aegis)** | **Live Strategy (Paper Engine)** |
 |-----------|-------------------------|----------------------------------|
 | **Purpose** | Research: find robust params, measure OOS performance, learn by regime | Execution: run breakout logic on live/simulated prices every ~5–10s |
 | **Symbols** | NIFTY futures only (single series) | NIFTY + BANKNIFTY + SENSEX (3 parallel strategies) |
@@ -99,7 +99,7 @@ The React **Strategies** page (`/strategies`) shows live snapshots from `GET /ap
 | API job queue | ✅ | `POST /api/backtest/run` → background job → `GET /api/backtest/result/{id}` |
 | Cancel | ✅ | `POST /api/backtest/cancel/{id}` |
 | Data fetch | ✅ | `POST /api/data/fetch`, `GET /api/data/health` |
-| Frontend | ✅ | React Algo Lab at `/backtest` (Run, Results, Learnings, Fills, Data tabs) |
+| Frontend | ✅ | React Aegis UI at `/backtest` (Run, Results, Learnings, Fills, Data tabs) |
 | WFA runner | ✅ | `walk_forward_runner.py` completes folds, writes memory |
 | Real data cache | ✅ | Example: `NIFTY26JULFUT` parquet — 3522 rows, Apr 1–Jun 10 2026 |
 
@@ -183,7 +183,7 @@ Dashboard looks for `trades_list` per fold; WFA only stores trade **counts**, no
 
 | Page | Health | Notes |
 |------|--------|-------|
-| `/backtest` (Algo Lab) | ✅ | Full tabs; job polling |
+| `/backtest` (Aegis) | ✅ | Full tabs; job polling |
 | `/strategies` | ✅ | Live 3-index cards |
 | `/dashboard` | ✅ | Engine status stream |
 | Build | ✅ | `npm run build` passes |
@@ -226,7 +226,7 @@ Until parity improves, **do not promote backtest winners directly to paper param
 
 **Dev URLs:**
 - Engine API: `http://localhost:8050`
-- React Algo Lab: `http://localhost:5173/backtest` (Vite proxy to engine)
+- React Aegis UI: `http://localhost:5173/backtest` (Vite proxy to engine)
 
 ---
 
@@ -318,7 +318,7 @@ A database becomes worth adding when you need:
 
 ### How each flow stores results today
 
-#### 1. Backtest / Algo Lab run
+#### 1. Backtest / Aegis run
 
 ```
 UI POST /api/backtest/run
@@ -408,7 +408,7 @@ POST /api/data/fetch
 python run.py --dev
 ```
 
-**Algo Lab (React):**
+**Aegis (React):**
 ```powershell
 cd frontend; npm run dev
 ```

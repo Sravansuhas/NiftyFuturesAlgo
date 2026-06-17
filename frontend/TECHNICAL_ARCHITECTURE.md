@@ -1,6 +1,6 @@
-# AG Quant - Master Technical Architecture & System Design (2026)
+# Aegis — Master Technical Architecture & System Design (2026)
 
-This document serves as the absolute technical blueprint for the AG Quant algorithmic trading system. It translates the Product Requirements Document (PRD) into a highly scalable, edge-native, AI-driven architectural standard suitable for deployment in 2026.
+This document serves as the absolute technical blueprint for the Aegis algorithmic trading system. It translates the Product Requirements Document (PRD) into a highly scalable, edge-native, AI-driven architectural standard suitable for deployment in 2026.
 
 ---
 
@@ -88,4 +88,4 @@ To survive the Indian capital markets, the system implements structural failsafe
 
 ---
 *Document Version: 1.0 (Locked for V1 Build)*
-*Author: AG Quant Co-Founder & Lead AI Architect*
+*Author: Aegis Co-Founder & Lead AI Architect*

@@ -232,7 +232,7 @@ def scan_data_health(stale_days: int = STALE_DAYS_THRESHOLD) -> Dict[str, Any]:
 
 def _recommendation(overall: str, stale: list, corrupt: list, latest_to: Optional[str]) -> str:
     if overall == "missing":
-        return "No historical parquet found. Use 'Download from Kite' in the Algo Lab → Presets & Data tab."
+        return "No historical parquet found. Use 'Download from Kite' in Aegis → Presets & Data tab."
     if overall == "corrupt":
         n = len(corrupt)
         return f"{n} corrupt file(s) detected. Click 'Repair / Re-download' to fetch fresh data from Kite."

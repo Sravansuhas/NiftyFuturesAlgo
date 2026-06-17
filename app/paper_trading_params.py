@@ -1,5 +1,5 @@
 """
-Paper Trading Configuration for NiftyFuturesAlgo
+Paper Trading Configuration for Aegis
 
 This file contains sensible, production-oriented (paper) parameters
 for live testing. These are intentionally more active than the strict

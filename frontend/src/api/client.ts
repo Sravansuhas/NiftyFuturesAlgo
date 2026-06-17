@@ -1,3 +1,5 @@
+import { fetchWithStaleCache } from './staleCache';
+import { todayIst } from '../utils/dates';
 import type {
   AgentInsights,
   TradingJournalEntry,
@@ -7,11 +9,17 @@ import type {
   DataHealthReport,
   ExternalJournalRow,
   ExternalSignalsSheet,
+  OptionsAlgoCloseResult,
+  OptionsAlgoStatus,
+  OptionsDeskTickers,
+  OptionsLegsPayload,
+  SheetVsAlgoComparison,
   FoMarketMoodSnapshot,
   KiteStatus,
   MemoryInsights,
   RealFillsAnalysis,
   RiskConfig,
+  OpsPreflightReport,
   SystemInfo,
   SystemStatus,
 } from './types';
@@ -25,25 +33,45 @@ class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
+const DEFAULT_TIMEOUT_MS = 8000;
+/** Kite-backed sheet / options endpoints — batched but can spike on cold cache. */
+const KITE_SLOW_TIMEOUT_MS = 20000;
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new ApiError(body || res.statusText, res.status);
+async function request<T>(path: string, init?: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new ApiError(body || res.statusText, res.status);
+    }
+
+    return res.json() as Promise<T>;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new ApiError(
+        `Request timed out after ${timeoutMs}ms — engine may be slow or unreachable on :8050`,
+      );
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
   }
-
-  return res.json() as Promise<T>;
 }
 
 export const api = {
-  health: () => request<{ status: string; timestamp: string }>('/health'),
+  health: () => request<{ status: string; timestamp: string; engine_ready?: boolean }>('/health', undefined, 15000),
+
+  getStatusQuick: () => request<SystemStatus>('/api/status/quick'),
 
   getStatus: () => request<SystemStatus>('/api/status'),
 
@@ -53,7 +81,14 @@ export const api = {
 
   getRiskConfig: () => request<RiskConfig>('/api/risk/config'),
 
-  getKiteStatus: () => request<KiteStatus>('/api/kite/status'),
+  getKiteStatus: (opts?: { quick?: boolean; skipCache?: boolean }) => {
+    const quick = opts?.quick ?? false;
+    const path = `/api/kite/status${quick ? '?quick=true' : ''}`;
+    const cacheKey = `kite-status:${quick ? 'quick' : 'full'}`;
+    const fetcher = () => request<KiteStatus>(path, undefined, KITE_SLOW_TIMEOUT_MS);
+    if (opts?.skipCache) return fetcher();
+    return fetchWithStaleCache(cacheKey, 30_000, fetcher);
+  },
 
   startKiteLogin: () =>
     request<{
@@ -88,7 +123,8 @@ export const api = {
       `/api/memory/insights${regime ? `?regime=${regime}` : ''}`
     ),
 
-  getAgentInsights: () => request<AgentInsights>('/api/agent/insights'),
+  getAgentInsights: (refresh = false) =>
+    request<AgentInsights>(`/api/agent/insights${refresh ? '?refresh=true' : ''}`),
 
   getJournal: (date?: string) =>
     request<{ journal: TradingJournalEntry | null; date_ist?: string; error?: string }>(
@@ -145,15 +181,50 @@ export const api = {
 
   getSystemInfo: () => request<SystemInfo>('/api/system/info'),
 
-  getTrades: (limit = 50) =>
-    request<{ trades: Array<Record<string, unknown>>; error?: string }>(
-      `/api/trades?limit=${limit}`
+  getTradingControls: () => request<import('./types').TradingControlsStatus>('/api/settings/trading'),
+
+  patchTradingControls: (patch: Record<string, boolean | string>) =>
+    request<import('./types').TradingControlsPatchResult>('/api/settings/trading', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+
+  resetTradingControls: () =>
+    request<import('./types').TradingControlsPatchResult>('/api/settings/trading/reset', {
+      method: 'POST',
+    }),
+
+  getOpsPreflight: (days = 1, skipToken = false) =>
+    request<OpsPreflightReport>(
+      `/api/ops/preflight?days=${days}${skipToken ? '&skip_token=true' : ''}`
     ),
 
-  getExternalSignals: (date?: string) =>
-    request<{ sheet: ExternalSignalsSheet; display_names: Record<string, string> }>(
-      `/api/external-signals${date ? `?date=${date}` : ''}`
+  getOpsStatus: (skipToken = false) =>
+    request<Record<string, unknown>>(
+      `/api/ops/status${skipToken ? '?skip_token=true' : ''}`
     ),
+
+  getOpsCompliance: () => request<Record<string, unknown>>('/api/ops/compliance'),
+
+  getTrades: (limit = 50, date?: string) => {
+    const tradeDate = date ?? todayIst();
+    return request<{ trades: Array<Record<string, unknown>>; error?: string; date?: string }>(
+      `/api/trades?limit=${limit}&date=${encodeURIComponent(tradeDate)}`,
+    );
+  },
+
+  getExternalSignals: (date?: string, opts?: { withPnl?: boolean }) => {
+    const params = new URLSearchParams();
+    if (date) params.set('date', date);
+    if (opts?.withPnl === false) params.set('with_pnl', 'false');
+    const qs = params.toString();
+    return request<{ sheet: ExternalSignalsSheet; display_names: Record<string, string> }>(
+      `/api/external-signals${qs ? `?${qs}` : ''}`,
+      undefined,
+      opts?.withPnl === false ? DEFAULT_TIMEOUT_MS : KITE_SLOW_TIMEOUT_MS,
+    );
+  },
 
   getExternalSignalDates: () =>
     request<{ dates: string[] }>('/api/external-signals/dates'),
@@ -180,7 +251,7 @@ export const api = {
       premiums: Record<string, unknown>;
       sheet?: ExternalSignalsSheet;
       pnl_summary?: import('./types').OptionsPnlSummary;
-    }>(`/api/external-signals/premiums${date ? `?date=${date}` : ''}`),
+    }>(`/api/external-signals/premiums${date ? `?date=${date}` : ''}`, undefined, KITE_SLOW_TIMEOUT_MS),
 
   evaluateExternalSignals: (date?: string) =>
     request<{
@@ -190,7 +261,11 @@ export const api = {
       journal_rows: ExternalJournalRow[];
       pnl_summary?: import('./types').OptionsPnlSummary;
       error?: string;
-    }>(`/api/external-signals/evaluate${date ? `?date=${date}` : ''}`, { method: 'POST' }),
+    }>(
+      `/api/external-signals/evaluate${date ? `?date=${date}` : ''}`,
+      { method: 'POST' },
+      KITE_SLOW_TIMEOUT_MS,
+    ),
 
   getExternalSignalJournal: (limit = 90, date?: string) => {
     const params = new URLSearchParams({ limit: String(limit) });
@@ -199,6 +274,54 @@ export const api = {
       `/api/external-signals/journal?${params}`
     );
   },
+
+  getSheetVsAlgoComparison: (date?: string) =>
+    request<SheetVsAlgoComparison>(
+      `/api/external-signals/comparison${date ? `?date=${date}` : ''}`,
+      undefined,
+      KITE_SLOW_TIMEOUT_MS,
+    ),
+
+  getOptionsLegsLive: (date?: string) =>
+    request<OptionsLegsPayload>(
+      `/api/options-legs/live${date ? `?date=${date}` : ''}`,
+      undefined,
+      KITE_SLOW_TIMEOUT_MS,
+    ),
+
+  getOptionsAlgoStatus: (opts?: { fast?: boolean; skipCache?: boolean }) => {
+    const fast = opts?.fast ?? false;
+    const path = `/api/options/algo/status${fast ? '?fast=true' : ''}`;
+    const cacheKey = `options-algo-status:${fast ? 'fast' : 'full'}`;
+    const ttl = fast ? 12_000 : 20_000;
+    const fetcher = () => request<OptionsAlgoStatus>(path, undefined, KITE_SLOW_TIMEOUT_MS);
+    if (opts?.skipCache) return fetcher();
+    return fetchWithStaleCache(cacheKey, ttl, fetcher);
+  },
+
+  getOptionsDeskTickers: (opts?: { skipCache?: boolean }) => {
+    const cacheKey = 'options-desk-tickers';
+    const fetcher = () =>
+      request<OptionsDeskTickers>('/api/options/desk/tickers', undefined, KITE_SLOW_TIMEOUT_MS);
+    if (opts?.skipCache) return fetcher();
+    return fetchWithStaleCache(cacheKey, 15_000, fetcher);
+  },
+
+  getTradesCached: (limit = 40, opts?: { skipCache?: boolean; date?: string }) => {
+    const tradeDate = opts?.date ?? todayIst();
+    const cacheKey = `trades:${limit}:${tradeDate}`;
+    const fetcher = () =>
+      request<{ trades: Array<Record<string, unknown>>; error?: string; date?: string }>(
+        `/api/trades?limit=${limit}&date=${encodeURIComponent(tradeDate)}`,
+      );
+    if (opts?.skipCache) return fetcher();
+    return fetchWithStaleCache(cacheKey, 12_000, fetcher);
+  },
+
+  closeOptionsAlgoStructure: (structureId: string) =>
+    request<OptionsAlgoCloseResult>(`/api/options/algo/close/${encodeURIComponent(structureId)}`, {
+      method: 'POST',
+    }),
 
   getCachedDatasets: () =>
     request<{ datasets: CachedDataset[]; count: number; error?: string }>(

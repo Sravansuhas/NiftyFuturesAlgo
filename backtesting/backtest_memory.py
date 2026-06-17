@@ -1,7 +1,7 @@
 """
 backtesting/backtest_memory.py
 
-"Repetitive Learning & Documentation" system for NiftyFuturesAlgo.
+"Repetitive Learning & Documentation" system for Aegis.
 
 Core principle: Every backtest run teaches the algo something concrete about
 regimes, parameters, costs, and edge cases. We store raw results + auto-generate

@@ -1,4 +1,4 @@
-# Co-Founder Playbook — Honest Status & Master Checklist
+# Aegis — Co-Founder Playbook — Honest Status & Master Checklist
 
 **For**: Srava (founder) + future you after 3 weeks of building  
 **Last updated**: 2026-06-10  

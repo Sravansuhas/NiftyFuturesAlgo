@@ -33,9 +33,13 @@ from .state_persistence import (
     clear_strategy_state,
 )
 from .market_calendar import is_market_open, is_real_market_open, now_ist, is_expiry_day
+from .config_loader import apply_symbol_config_to_paper_params
 
 import logging
 logger = logging.getLogger(__name__)
+
+# Reuse LTP within a main-loop tick (run_once + get_signal_snapshot) to avoid duplicate Kite calls.
+_PRICE_CACHE_TTL_SEC = float(os.getenv("PRICE_CACHE_TTL_SEC", "3"))
 
 
 class DataFeedError(Exception):
@@ -113,9 +117,9 @@ class BaseStrategy(ABC):
         Even when no signal, it shows current state, last known values, and a "heartbeat".
         ALWAYS refreshes price so held positions show live ticking LTP + correct ATR (fixes frozen cards for BANKNIFTY/SENSEX).
         """
-        # Always refresh from source (polling or sim) so UI + terminal show live prices for ALL symbols
+        # Prefer cached tick from run_once in the same loop iteration (avoids duplicate REST/WS).
         try:
-            current_price = self._get_current_price()
+            current_price = self._get_current_price(use_cache=True)
         except Exception:
             current_price = getattr(self, '_last_known_price', 0) or 0
         self._last_known_price = current_price if current_price else getattr(self, '_last_known_price', 0)
@@ -259,6 +263,9 @@ class BaseStrategy(ABC):
             # Data age in seconds (great for diagnosing SENSEX lag in GUI and logs)
             "data_age_seconds": round(time.time() - getattr(self, '_last_price_update_ts', time.time()), 1),
             "gate_summary": get_gate_summary(self._index_key or self.symbol or ""),
+            "prev_candle_source": getattr(self, "_prev_candle_source", "unknown"),
+            "prev_high": round(self.prev_high, 2) if self.prev_high else 0,
+            "prev_low": round(self.prev_low, 2) if self.prev_low else 0,
             "last_update": datetime.datetime.now().strftime("%H:%M:%S"),
         }
 
@@ -345,6 +352,10 @@ class BaseStrategy(ABC):
                     f"current_atr={self.current_atr:.2f}")
 
         self._index_key = index_name.upper()
+        # Per-symbol YAML overrides (min ATR, breakout mult, session bounds, etc.)
+        self.paper_params = apply_symbol_config_to_paper_params(
+            self._index_key, self.paper_params
+        )
 
     def restore_from_persistence(self, index_key: str) -> None:
         """Restore per-symbol trade context after broker reconciliation on startup."""
@@ -514,9 +525,39 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
 
         self._index_key: Optional[str] = None
         self.ws_feed = None
+        self._prev_candle_source = "unknown"
+        self._last_ws_prev_open_time = None
 
     def _log_reject(self, reason: str, details: Optional[dict] = None, symbol: Optional[str] = None):
         log_signal_rejected(reason, details, symbol=symbol or self._index_key or self.symbol)
+
+    def _passes_sheet_gate(self, side: str, market_regime: dict) -> bool:
+        """Options sheet bias / confirm mode — manual analysis feeds futures entries."""
+        try:
+            from .sheet_algo_bridge import check_sheet_allows_futures_entry
+            result = check_sheet_allows_futures_entry(
+                self._index_key or "NIFTY",
+                side,
+                algo_trend=(market_regime or {}).get("trend"),
+            )
+            if not result.allowed:
+                reason_key = (result.reason or "sheet_gate").split(":")[0].strip()
+                self._log_reject(reason_key, {
+                    "message": result.reason,
+                    "sheet_bias": result.bias,
+                    "sheet_mode": result.mode,
+                    "side": side,
+                    "filter": result.reason,
+                })
+                return False
+            if result.advisory_only and result.bias not in ("none", ""):
+                logger.info(
+                    "[SHEET] %s %s — sheet bias %s (%s)",
+                    self._index_key, side, result.bias, result.detail,
+                )
+        except Exception as exc:
+            logger.debug("Sheet gate skipped (non-fatal): %s", exc)
+        return True
 
     def _trades_today_for(self, rg, index_key: str) -> int:
         if hasattr(rg, "symbol_daily_trades"):
@@ -661,24 +702,141 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                 return False
         return True
 
+    def _get_candle_builder(self):
+        """Resolve CandleBuilder from ws_feed (preferred) or direct injection."""
+        ws_feed = getattr(self, "ws_feed", None)
+        if ws_feed is not None and hasattr(ws_feed, "get_candle_builder"):
+            return ws_feed.get_candle_builder()
+        return getattr(self, "candle_builder", None)
+
+    def _apply_previous_candle(self, candle: dict, source: str) -> None:
+        """Set breakout reference levels from a completed 5m bar."""
+        self.prev_high = float(candle.get("high", 0) or 0)
+        self.prev_low = float(candle.get("low", 0) or 0)
+        if "volume" in candle:
+            self.prev_volume = int(candle.get("volume", 0) or 0)
+        if candle.get("close") is not None:
+            self._last_candle_close = float(candle["close"])
+        if candle.get("open_time") is not None:
+            self._last_ws_prev_open_time = candle["open_time"]
+        self._prev_candle_source = source
+        self._last_seed_time = time.time()
+
+    def _log_prev_candle_diag(self, source: str, *, rolled: bool = False) -> None:
+        try:
+            from .diagnostic_logger import diag
+            event = "PREV_CANDLE_ROLL" if rolled else "PREV_CANDLE_SEED"
+            diag.log_signal_decision(self.symbol, event, {
+                "prev_candle_source": source,
+                "prev_high": round(self.prev_high, 2),
+                "prev_low": round(self.prev_low, 2),
+                "prev_close": round(getattr(self, "_last_candle_close", 0) or 0, 2),
+            })
+        except Exception:
+            pass
+
+    def _bootstrap_atr_from_historical_candles(self, candles: list) -> None:
+        """Bootstrap ATR from Kite-style historical candle rows."""
+        if not candles or len(candles) < 2:
+            return
+        trs = []
+        for i in range(1, min(len(candles), 25)):
+            high = float(candles[-i].get("high", 0))
+            low = float(candles[-i].get("low", 0))
+            prev_close = (
+                float(candles[-i - 1].get("close", candles[-i].get("close", 0)))
+                if i + 1 < len(candles)
+                else float(candles[-i].get("close", 0))
+            )
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            trs.append(tr)
+
+        if not trs:
+            return
+        self._tr_values = trs[-14:]
+        self.current_atr = sum(self._tr_values) / len(self._tr_values)
+        if "BANKNIFTY" in (self.symbol or "").upper():
+            self.current_atr = max(self.current_atr, 45.0)
+        elif "SENSEX" in (self.symbol or "").upper():
+            self.current_atr = max(self.current_atr, 65.0)
+
+    def _sync_previous_candle_from_builder(self) -> bool:
+        """Prefer completed WebSocket 5m candles for prev_high/low when available."""
+        if not self.instrument_token:
+            return False
+        from .candle_builder import get_previous_candle_for_symbol
+
+        builder = self._get_candle_builder()
+        ws_prev = get_previous_candle_for_symbol(int(self.instrument_token), builder)
+        if not ws_prev:
+            return False
+
+        open_time = ws_prev.get("open_time")
+        changed = open_time != getattr(self, "_last_ws_prev_open_time", None)
+        if changed or self._prev_candle_source != "ws_candle":
+            self._apply_previous_candle(ws_prev, "ws_candle")
+            if changed:
+                logger.info(
+                    f"[WS_CANDLE] {self.symbol}: prev_high={self.prev_high:.2f} "
+                    f"prev_low={self.prev_low:.2f} (completed 5m bar)"
+                )
+                self._log_prev_candle_diag("ws_candle", rolled=True)
+        return True
+
     def _seed_previous_candle(self):
         """
-        Seed prev_high/low/volume + initial ATR from the most recent completed 5min candle via Kite historical data.
+        Seed prev_high/low/volume + initial ATR.
 
-        This is critical for multi-index correctness. Must be called AFTER self.symbol and
-        self.instrument_token have been set for the desired index.
-
-        We now log at INFO level so the per-symbol seeding outcome is always visible in run logs
-        (this was missing in earlier versions and made multi-symbol bugs hard to diagnose).
+        Prefers completed WebSocket 5m candles when CandleBuilder has data; otherwise
+        falls back to Kite REST historical seeding.
         """
-        if not self.kite or not self.symbol:
+        if not self.symbol:
             self.prev_high = 0.0
             self.prev_low = 0.0
-            logger.warning(f"[{self.symbol}] Cannot seed previous candle - no kite or symbol")
+            logger.warning("[?] Cannot seed previous candle - no symbol")
+            return
+
+        from .candle_builder import get_previous_candle_for_symbol
+
+        builder = self._get_candle_builder()
+        ws_prev = get_previous_candle_for_symbol(self.instrument_token, builder) if self.instrument_token else None
+        if ws_prev:
+            self._apply_previous_candle(ws_prev, "ws_candle")
+            logger.info(
+                f"[SEED] {self.symbol}: prev_high={self.prev_high:.2f} prev_low={self.prev_low:.2f} "
+                f"prev_candle_source=ws_candle"
+            )
+            self._log_prev_candle_diag("ws_candle")
+            if self.kite:
+                try:
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    from_date = (now - datetime.timedelta(hours=3)).strftime("%Y-%m-%d")
+                    to_date = now.strftime("%Y-%m-%d")
+                    candles = self.kite.historical_data(
+                        instrument_token=self.instrument_token or self.symbol,
+                        from_date=from_date,
+                        to_date=to_date,
+                        interval="5minute",
+                        continuous=False,
+                        oi=False,
+                    )
+                    self._bootstrap_atr_from_historical_candles(candles)
+                    if self.current_atr > 0:
+                        logger.info(
+                            f"[SEED] {self.symbol}: ATR={self.current_atr:.2f} "
+                            f"(ATR from rest_historical, prev from ws_candle)"
+                        )
+                except Exception as atr_exc:
+                    logger.debug(f"[{self.symbol}] ATR bootstrap after ws prev skipped: {atr_exc}")
+            return
+
+        if not self.kite:
+            self.prev_high = 0.0
+            self.prev_low = 0.0
+            logger.warning(f"[{self.symbol}] Cannot seed previous candle - no kite or WS candles")
             return
 
         try:
-            # Fetch last ~2-3 hours to guarantee at least one completed candle
             now = datetime.datetime.now(datetime.timezone.utc)
             from_date = (now - datetime.timedelta(hours=3)).strftime("%Y-%m-%d")
             to_date = now.strftime("%Y-%m-%d")
@@ -694,32 +852,19 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
 
             if candles and len(candles) >= 2:
                 prev = candles[-2]
-                self.prev_high = float(prev.get("high", prev.get("close", 0)))
-                self.prev_low = float(prev.get("low", prev.get("close", 0)))
-                self.prev_volume = int(prev.get("volume", 100000))
-                self._last_seed_time = time.time()
+                self._apply_previous_candle({
+                    "high": prev.get("high", prev.get("close", 0)),
+                    "low": prev.get("low", prev.get("close", 0)),
+                    "close": prev.get("close", 0),
+                    "volume": prev.get("volume", 100000),
+                }, "rest_historical")
+                self._bootstrap_atr_from_historical_candles(candles)
 
-                # Bootstrap ATR from recent historical candles (prevents "ATR=0 for first hour")
-                trs = []
-                for i in range(1, min(len(candles), 25)):
-                    high = float(candles[-i].get("high", 0))
-                    low = float(candles[-i].get("low", 0))
-                    prev_close = float(candles[-i-1].get("close", candles[-i].get("close", 0))) if i+1 < len(candles) else float(candles[-i].get("close", 0))
-                    tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-                    trs.append(tr)
-
-                if trs:
-                    self._tr_values = trs[-14:]
-                    self.current_atr = sum(self._tr_values) / len(self._tr_values)
-
-                    # Scale-aware safety floors for higher-priced indices
-                    if "BANKNIFTY" in (self.symbol or "").upper():
-                        self.current_atr = max(self.current_atr, 45.0)
-                    elif "SENSEX" in (self.symbol or "").upper():
-                        self.current_atr = max(self.current_atr, 65.0)
-
-                logger.info(f"[SEED] {self.symbol}: prev_high={self.prev_high:.2f} prev_low={self.prev_low:.2f} "
-                            f"ATR={self.current_atr:.2f} (from Kite historical)")
+                logger.info(
+                    f"[SEED] {self.symbol}: prev_high={self.prev_high:.2f} prev_low={self.prev_low:.2f} "
+                    f"ATR={self.current_atr:.2f} prev_candle_source=rest_historical"
+                )
+                self._log_prev_candle_diag("rest_historical")
 
             else:
                 logger.warning(f"[{self.symbol}] Insufficient historical candles for seeding. Using conservative defaults.")
@@ -727,13 +872,17 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                 self.prev_high = base + 20
                 self.prev_low = base - 20
                 self.current_atr = 20.0
+                self._prev_candle_source = "rest_historical"
 
         except Exception as e:
-            logger.warning(f"[{self.symbol}] Could not seed previous candle from Kite history: {e}. "
-                           "Breakout logic will be weak until first 5-min roll.")
+            logger.warning(
+                f"[{self.symbol}] Could not seed previous candle from Kite history: {e}. "
+                "Breakout logic will be weak until first 5-min roll."
+            )
             self.prev_high = 0.0
             self.prev_low = 0.0
-            self.current_atr = 15.0   # safe fallback so min_atr filter doesn't instantly kill everything
+            self.current_atr = 15.0
+            self._prev_candle_source = "rest_historical"
 
     # ========================================================================
     # CLOSED-MARKET DEV TESTING: Realistic volatility from local cache
@@ -822,17 +971,19 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
         return False
 
     def _roll_previous_candle_if_needed(self, current_price: float):
-        """Time-based 5-min candle roller + ATR calculation."""
+        """5-min candle roller + ATR calculation; prev levels prefer WebSocket builder."""
+        ws_active = self._sync_previous_candle_from_builder()
+
         now = time.time()
         bucket = int(now // 300) * 300
 
         if self._current_candle["start_ts"] == 0:
             self._current_candle = {"start_ts": bucket, "open": current_price, "high": current_price, "low": current_price}
-            self._last_candle_close = current_price
+            if not ws_active:
+                self._last_candle_close = current_price
             return
 
         if bucket > self._current_candle["start_ts"]:
-            # Calculate True Range (prev_close = prior completed candle close, not current open)
             prev_close = self._last_candle_close if self._last_candle_close > 0 else self._current_candle["open"]
             tr = max(
                 self._current_candle["high"] - self._current_candle["low"],
@@ -840,7 +991,6 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                 abs(self._current_candle["low"] - prev_close)
             )
 
-            # Short-term ATR (14)
             self._tr_values.append(tr)
             if len(self._tr_values) > 14:
                 self._tr_values.pop(0)
@@ -852,23 +1002,24 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
             except Exception:
                 pass
 
-            # Long-term ATR (50) for regime detection
             self._long_tr_values.append(tr)
             if len(self._long_tr_values) > 50:
                 self._long_tr_values.pop(0)
             self.long_term_atr = sum(self._long_tr_values) / len(self._long_tr_values) if self._long_tr_values else self.current_atr
 
-            # Roll previous candle
-            if self._current_candle["high"] > 0:
+            if not ws_active and self._current_candle["high"] > 0:
                 self.prev_high = self._current_candle["high"]
                 self.prev_low = self._current_candle["low"]
                 self.prev_volume = max(self.prev_volume, 80000)
+                self._prev_candle_source = "polling_roll"
+                self._log_prev_candle_diag("polling_roll", rolled=True)
 
-            self._last_candle_close = current_price
+            if not ws_active:
+                self._last_candle_close = current_price
             self._current_candle = {"start_ts": bucket, "open": current_price, "high": current_price, "low": current_price}
             self._last_candle_update = now
 
-            if now - self._last_seed_time > 900:
+            if not ws_active and now - self._last_seed_time > 900:
                 self._seed_previous_candle()
 
     def _update_atr_and_ema_for_live(self, current_price: float):
@@ -1174,6 +1325,9 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
             self._log_reject("risk_gatekeeper_denied_entry")
             return False
 
+        if not self._passes_sheet_gate("BUY", market_regime):
+            return False
+
         # Dynamic breakout buffer
         if self.paper_params.use_atr_breakout and self.current_atr > 0:
             breakout_buffer = self.current_atr * self.paper_params.breakout_atr_mult
@@ -1319,6 +1473,9 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
 
         if not rg.can_place_order(self.symbol if self.risk_manager else None, is_exit=False):
             self._log_reject("risk_gatekeeper_denied_entry")
+            return False
+
+        if not self._passes_sheet_gate("SELL", market_regime):
             return False
 
         if self.paper_params.use_atr_breakout and self.current_atr > 0:
@@ -1658,12 +1815,23 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
             pass
         return sim_price
 
-    def _get_current_price(self) -> float:
+    def _invalidate_price_cache(self) -> None:
+        self._price_cache_ts = 0.0
+        self._price_cache_val = None
+
+    def _get_current_price(self, *, use_cache: bool = True) -> float:
         """
         Real data first during actual market hours.
         Dev closed-market mode uses simulation so ATR/breakout logic stays exercisable.
         Paper mode falls back to simulation after real attempts fail.
         """
+        now = time.time()
+        if use_cache:
+            cached_at = getattr(self, "_price_cache_ts", 0.0)
+            cached_val = getattr(self, "_price_cache_val", None)
+            if cached_val is not None and now - cached_at < _PRICE_CACHE_TTL_SEC:
+                return float(cached_val)
+
         if self._should_use_dev_simulation():
             if not getattr(self, "_dev_sim_logged", False):
                 try:
@@ -1675,7 +1843,10 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                 except Exception:
                     pass
                 self._dev_sim_logged = True
-            return self._simulate_price(reason="dev_closed_market")
+            price = self._simulate_price(reason="dev_closed_market")
+            self._price_cache_val = price
+            self._price_cache_ts = time.time()
+            return price
 
         ws_feed = getattr(self, "ws_feed", None)
         if ws_feed and self.instrument_token:
@@ -1690,6 +1861,8 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                         diag.log_price_fetch(self.symbol, price, "WS", age * 1000.0, token=self.instrument_token)
                     except Exception:
                         pass
+                    self._price_cache_val = price
+                    self._price_cache_ts = time.time()
                     return price
             except Exception as ws_exc:
                 logger.debug(f"[WS] Price fallback for {self.symbol}: {ws_exc}")
@@ -1736,7 +1909,10 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                             and state_machine.get_state() != SystemState.LIVE_MODE
                             and os.getenv("FORCE_DRY_RUN", "true").strip().lower() not in {"0", "false", "no"}
                         ):
-                            return self._simulate_price(reason="stale_ltp")
+                            price = self._simulate_price(reason="stale_ltp")
+                            self._price_cache_val = price
+                            self._price_cache_ts = time.time()
+                            return price
 
                         self._last_known_price = price
                         self._last_successful_real_price = price
@@ -1747,6 +1923,8 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                             diag.log_price_fetch(self.symbol, price, "REAL", duration_ms, token=self.instrument_token)
                         except Exception:
                             pass
+                        self._price_cache_val = price
+                        self._price_cache_ts = time.time()
                         return price
 
                 if attempt < attempts - 1:
@@ -1764,9 +1942,16 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
                     raise DataFeedError(f"Live LTP failed for {self.symbol}")
 
                 logger.warning(f"[PAPER] Real data failed for {self.symbol} after retries. Using simulation anchored to last known.")
-                return self._simulate_price(reason="api_failure")
+                price = self._simulate_price(reason="api_failure")
+                self._price_cache_val = price
+                self._price_cache_ts = time.time()
+                return price
 
-        return self._last_known_price or 0.0
+        fallback = self._last_known_price or 0.0
+        if fallback:
+            self._price_cache_val = fallback
+            self._price_cache_ts = time.time()
+        return fallback
 
     def _get_current_volume(self):
         """Real-time bar volume is unavailable from LTP-only feeds; None signals skip confirmation."""
@@ -1897,6 +2082,7 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
 
     def _place_order(self, side: str):
         """Place an entry order through the Risk Gatekeeper (or multi-symbol manager) with regime-aware sizing."""
+        self._invalidate_price_cache()
         if not self.kite or not self.symbol:
             self._log_reject("missing_kite_or_symbol")
             return
@@ -1999,6 +2185,7 @@ class PreviousCandleBreakoutStrategy(BaseStrategy):
 
     def _place_order_exit(self):
         """Exit the current position through the Risk Gatekeeper (per-symbol aware)."""
+        self._invalidate_price_cache()
         rg = self._rg
         try:
             if rg.is_flat(self.symbol if hasattr(rg, 'positions') else None):

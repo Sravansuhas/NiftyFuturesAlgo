@@ -22,14 +22,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+os.chdir(ROOT)
 
 from dotenv import load_dotenv
 from kiteconnect import KiteConnect
 
+from app.branding import PROJECT_NAME
+from app.instruments_manager import instruments_manager
 from app.kite_auth import validate_access_token
 from app.promoted_params import apply_promoted_overlay, preview_promoted_overlay
 from backtesting.costs import CostConfig, TransactionCostModel
-from backtesting.data_loader import fetch_real_index_futures_data
+from backtesting.data_loader import best_cache_date_window_for_underlying, fetch_real_index_futures_data
 from backtesting.previous_candle_backtest_strategy import PreviousCandleBacktestStrategy
 from backtesting.promotion_gates import (
     PromotionGateConfig,
@@ -39,6 +42,7 @@ from backtesting.promotion_gates import (
     write_candidate,
 )
 from backtesting.walk_forward_runner import run_walk_forward
+from scripts.run_multi_index_wfo import build_multi_index_report, write_multi_index_report
 
 INDICES = ("NIFTY", "BANKNIFTY", "SENSEX")
 LOT_SIZES = {"NIFTY": 65, "BANKNIFTY": 30, "SENSEX": 20}
@@ -55,6 +59,13 @@ PARAM_GRID = {
 }
 
 
+def _index_exchange(underlying: str) -> str:
+    try:
+        return instruments_manager.get_exchange(underlying)
+    except Exception:
+        return "BFO" if underlying == "SENSEX" else "NFO"
+
+
 def _build_cost_model(underlying: str) -> TransactionCostModel:
     lot = LOT_SIZES[underlying]
     return TransactionCostModel(CostConfig(
@@ -63,28 +74,6 @@ def _build_cost_model(underlying: str) -> TransactionCostModel:
         default_slippage_points=4.0 if underlying == "NIFTY" else 6.0,
         lot_size=lot,
     ))
-
-
-def _best_cache_date_window(underlying: str) -> tuple[datetime, datetime] | None:
-    """Pick the widest available cache window for an index (offline promotion)."""
-    from backtesting.data_loader import list_available_cached_datasets
-
-    best = None
-    best_rows = 0
-    prefix = underlying.upper()
-    for ds in list_available_cached_datasets():
-        sym = (ds.get("symbol") or "").upper()
-        if not sym.startswith(prefix):
-            continue
-        rows = int(ds.get("rows") or 0)
-        if rows > best_rows:
-            best_rows = rows
-            best = ds
-    if not best:
-        return None
-    from_dt = datetime.strptime(best["actual_from"], "%Y-%m-%d")
-    to_dt = datetime.strptime(best["actual_to"], "%Y-%m-%d")
-    return from_dt, to_dt
 
 
 def _load_data(
@@ -96,7 +85,7 @@ def _load_data(
     to_date = datetime.now()
     from_date = to_date - timedelta(days=30 * months_back)
     if cache_only:
-        window = _best_cache_date_window(underlying)
+        window = best_cache_date_window_for_underlying(underlying)
         if window:
             from_date, to_date = window
     df = fetch_real_index_futures_data(
@@ -114,6 +103,9 @@ def _load_data(
         "from": str(df.index.min()),
         "to": str(df.index.max()),
         "cache_only": cache_only,
+        "exchange": _index_exchange(underlying),
+        "lot_size": LOT_SIZES[underlying],
+        "months_back": months_back,
     }
     return df, meta
 
@@ -171,6 +163,59 @@ def _run_index(
     return summary
 
 
+def sync_report_from_candidates(
+    *,
+    cost_multiplier: float = 2.0,
+    months: int = 5,
+    cache_only: bool = False,
+) -> Path:
+    """Write wfo_runs JSON from strategy_candidates.json (no WFO re-run)."""
+    candidates = load_candidates()
+    if not candidates:
+        raise ValueError("No candidates in data/strategy_candidates.json")
+
+    results: dict = {}
+    for cand in candidates:
+        underlying = cand.get("underlying")
+        if not underlying:
+            continue
+        summary = cand.get("summary") or {}
+        results[underlying] = {
+            "underlying": underlying,
+            "avg_return": summary.get("avg_return"),
+            "avg_pf": summary.get("avg_pf"),
+            "total_folds_run": summary.get("total_folds_run", 0),
+            "total_trades": 0,
+            "data_meta": {
+                "exchange": _index_exchange(underlying),
+                "lot_size": LOT_SIZES[underlying],
+            },
+            "promotion": {
+                "passed": cand.get("passed", False),
+                "underlying": underlying,
+                "best_params": cand.get("best_params") or {},
+                "reasons": cand.get("reasons") or [],
+                "fold_pass_count": cand.get("fold_pass_count", 0),
+                "summary": summary,
+            },
+        }
+
+    report = build_multi_index_report(
+        indices=INDICES,
+        results=results,
+        config={
+            "source": "run_promotion_wfo",
+            "months": months,
+            "indices": list(INDICES),
+            "cache_only": cache_only,
+            "cost_multiplier": cost_multiplier,
+            "synced_from": "strategy_candidates.json",
+        },
+        started_at=time.time(),
+    )
+    return write_multi_index_report(report)
+
+
 def _print_report(results: dict) -> None:
     print("\n" + "=" * 72)
     print("PROMOTION GATE REPORT — ALL INDICES")
@@ -207,10 +252,34 @@ def main() -> int:
     parser.add_argument("--months", type=int, default=5, help="Months of history to request")
     parser.add_argument("--cache-only", action="store_true", help="Never call Kite API for data")
     parser.add_argument("--apply-overlays", action="store_true", help="Apply human-confirmed overlays for passed indices")
-    parser.add_argument("--cost-multiplier", type=float, default=1.0, help="Cost stress multiplier (>=1.0 for promotion)")
+    parser.add_argument(
+        "--cost-multiplier",
+        type=float,
+        default=2.0,
+        help="Cost stress multiplier (promotion gates require 2.0)",
+    )
+    parser.add_argument(
+        "--sync-report-only",
+        action="store_true",
+        help="Write data/wfo_runs report from strategy_candidates.json (no WFO)",
+    )
     args = parser.parse_args()
 
-    load_dotenv()
+    load_dotenv(ROOT / ".env")
+
+    if args.sync_report_only:
+        try:
+            path = sync_report_from_candidates(
+                cost_multiplier=args.cost_multiplier,
+                months=args.months,
+                cache_only=args.cache_only,
+            )
+        except ValueError as exc:
+            print(f"[FAIL] {exc}")
+            return 2
+        print(f"[REPORT] Synced from candidates → {path}")
+        print("Status: python scripts/algo_lab_ops.py wfo-status")
+        return 0
     token_ok, _, token_msg = validate_access_token()
     if not token_ok and not args.cache_only:
         print(f"[WARN] Kite token invalid ({token_msg}). Using --cache-only for available indices.")
@@ -218,13 +287,15 @@ def main() -> int:
 
     kite = KiteConnect(api_key=os.getenv("KITE_API_KEY", ""))
     kite.set_access_token(os.getenv("KITE_ACCESS_TOKEN", ""))
+    instruments_manager.bind(kite)
 
     print("=" * 72)
-    print("NiftyFuturesAlgo — Multi-Index Promotion WFO")
+    print(f"{PROJECT_NAME} — Multi-Index Promotion WFO")
     print(f"Mode: {'cache-only' if args.cache_only else 'cache-first + Kite fallback'}")
     print(f"Cost multiplier: {args.cost_multiplier}")
     print("=" * 72)
 
+    started_at = time.time()
     all_results: dict = {}
     for underlying in INDICES:
         print(f"\n>>> Running WFO for {underlying}...")
@@ -245,6 +316,21 @@ def main() -> int:
 
     _print_report(all_results)
 
+    report = build_multi_index_report(
+        indices=INDICES,
+        results=all_results,
+        config={
+            "source": "run_promotion_wfo",
+            "months": args.months,
+            "indices": list(INDICES),
+            "cache_only": args.cache_only,
+            "cost_multiplier": args.cost_multiplier,
+        },
+        started_at=started_at,
+    )
+    report_path = write_multi_index_report(report)
+    print(f"\n[REPORT] Wrote {report_path}")
+
     if args.apply_overlays:
         print("\n--- Applying promoted overlays (human-confirmed) ---")
         for underlying in INDICES:
@@ -263,6 +349,7 @@ def main() -> int:
     print("\n" + "=" * 72)
     print(f"Candidates on disk: {len(candidates)} | Passed: {passed or 'none'}")
     print("Re-run: python scripts/fo_safe_deploy.py")
+    print("Status: python scripts/algo_lab_ops.py wfo-status")
     print("=" * 72)
     return 0 if len(passed) == len(INDICES) else 1
 

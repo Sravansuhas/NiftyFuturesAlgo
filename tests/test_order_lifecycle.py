@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.branding import DEFAULT_ALGO_ID
 from app.multi_symbol_risk import MultiSymbolRiskManager, SymbolPosition
 from app.order_lifecycle import OrderLifecycleManager, order_lifecycle
 from app.risk_gatekeeper import RiskConfig, RiskGatekeeper
@@ -87,7 +88,7 @@ class OrderLifecycleTests(unittest.TestCase):
             "transaction_type": "BUY",
             "is_exit": False,
             "exchange": "NFO",
-            "tag": "NFALGO",
+            "tag": DEFAULT_ALGO_ID,
             "index_key": "NIFTY",
         })
 

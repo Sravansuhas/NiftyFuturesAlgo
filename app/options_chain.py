@@ -321,6 +321,67 @@ class OptionsChainManager:
         end = min(len(unique_strikes), atm_idx + n + 1)
         return [float(s) for s in unique_strikes[start:end]]
 
+    def resolve_strikes_from_chain(
+        self,
+        strikes: Dict[str, float],
+        underlying: str,
+        expiry: Optional[Union[date, datetime, str]] = None,
+    ) -> Dict[str, float]:
+        """
+        Snap iron-condor strikes to chain-listed values while preserving order.
+
+        Each target is mapped to the nearest available strike strictly above
+        the previous leg (put_long < put_short < call_short < call_long).
+        """
+        required = ("put_long", "put_short", "call_short", "call_long")
+        missing = [k for k in required if k not in strikes]
+        if missing:
+            raise ValueError(f"strikes missing required keys: {missing}")
+
+        underlying_upper = underlying.upper()
+        chain = self.get_chain(underlying_upper, expiry)
+        if chain.empty or "strike" not in chain.columns:
+            return {k: float(strikes[k]) for k in required}
+
+        available = sorted({float(s) for s in chain["strike"].dropna().unique()})
+        if len(available) < 4:
+            logger.warning(
+                "[OptionsChain] Fewer than 4 strikes for %s — using raw strikes",
+                underlying_upper,
+            )
+            return {k: float(strikes[k]) for k in required}
+
+        resolved: Dict[str, float] = {}
+        prev = float("-inf")
+        for key in required:
+            target = float(strikes[key])
+            candidates = [s for s in available if s > prev]
+            if not candidates:
+                logger.warning(
+                    "[OptionsChain] Could not preserve strike order for %s at %s",
+                    underlying_upper,
+                    key,
+                )
+                return {k: float(strikes[k]) for k in required}
+            nearest = min(candidates, key=lambda s: abs(s - target))
+            resolved[key] = nearest
+            prev = nearest
+
+        pl, ps, cs, cl = (
+            resolved["put_long"],
+            resolved["put_short"],
+            resolved["call_short"],
+            resolved["call_long"],
+        )
+        if not (pl < ps < cs < cl):
+            logger.warning(
+                "[OptionsChain] Strike ordering invalid after snap for %s",
+                underlying_upper,
+            )
+            return {k: float(strikes[k]) for k in required}
+
+        return resolved
+
 
 # Global singleton (mirrors instruments_manager)
 options_chain_manager = OptionsChainManager()

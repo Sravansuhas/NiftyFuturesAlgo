@@ -1,4 +1,4 @@
-# NiftyFuturesAlgo — Product Requirements Document (v0.4)
+# Aegis — Product Requirements Document (v0.4)
 
 **Status**: Core infrastructure complete + major robustness gaps closed (costs, filters, caching, expiry handling). Not yet ready for extended paper with real capital.
 

@@ -1,8 +1,8 @@
-# NiftyFuturesAlgo
+# Aegis
 
-**Version 0.3.0** — A deterministic, risk-first algorithmic trading platform for Indian index F&O (NIFTY, BankNifty, Sensex futures) using Zerodha Kite Connect.
+**Version 0.3.0** — **Aegis** is the official platform name: infrastructure-first algorithmic trading guardianship for Indian index F&O (NIFTY, BankNifty, Sensex futures) using Zerodha Kite Connect. **RiskGatekeeper** is the shield — fail-closed, broker-authoritative, audit-ready — and every order must pass it before strategy logic reaches the broker.
 
-> **2026 Founder Vision**: Evolving into a self-improving, agentic platform for full F&O — walk-forward validation, failure-pattern mining, Grok skills for operational workflows, and an Algo Lab UI — while keeping **RiskGatekeeper** as sacred.
+> **2026 Founder Vision**: Evolving into a self-improving, agentic platform for full F&O — walk-forward validation, failure-pattern mining, Grok skills for operational workflows, and an **Aegis UI** — while keeping **RiskGatekeeper** as sacred.
 >
 > Start here: [VISION_AND_STRATEGY.md](VISION_AND_STRATEGY.md) | [ROADMAP.md](ROADMAP.md) | [AGENTS_AND_SKILLS.md](AGENTS_AND_SKILLS.md) | [ARCHITECTURE.md](ARCHITECTURE.md) | [KITE_INTEGRATION.md](KITE_INTEGRATION.md) | [docs/BUILD_REFERENCE.md](docs/BUILD_REFERENCE.md)
 
@@ -32,8 +32,8 @@ python generate_token.py --validate
 python run.py --ensure-token    # Validates token; auto-login if expired
 
 # 5. Open UI
-#    http://localhost:8050       — Legacy dashboard + built Algo Lab
-#    http://localhost:8050/ui/     — React Algo Lab (after npm run build)
+#    http://localhost:8050       — Legacy dashboard + built Aegis UI
+#    http://localhost:8050/ui/     — React Aegis UI (after npm run build)
 ```
 
 **Closed-market development:**
@@ -61,8 +61,8 @@ Full operational guide: [docs/BUILD_REFERENCE.md](docs/BUILD_REFERENCE.md) | Dai
 | Core infrastructure (risk, state machine, recon, calendar, audit) | **Complete** |
 | Strategy & backtesting (Previous Candle Breakout, costs, WFO) | **Complete** |
 | Multi-index paper trading (NIFTY, BANKNIFTY, SENSEX) | **Complete** |
-| Algo Lab UI + FastAPI dashboard | **Complete** |
-| Agent/skills operational layer | **In progress** |
+| Aegis UI + FastAPI dashboard | **Complete** |
+| Agent/skills operational layer + insights dashboard | **Complete** (proposals human-gated) |
 | Live trading | **Dry-run / paper only** |
 
 **Important:** `FORCE_DRY_RUN=true` by default. Live requires explicit `LIVE_TRADING_CONFIRMED` and manual approval.
@@ -74,7 +74,7 @@ Full operational guide: [docs/BUILD_REFERENCE.md](docs/BUILD_REFERENCE.md) | Dai
 - **3-index futures paper engine** — NIFTY (NFO), BankNifty (NFO), Sensex (BFO) front-month futures via `instruments_manager`
 - **Previous Candle Breakout** — ATR buffers, volume/trend filters, regime detection, adaptive exits, session/expiry discipline
 - **Risk-first execution** — Every order passes `RiskGatekeeper`; broker state is authoritative; fail-closed by design
-- **Algo Lab** — Walk-forward optimization, promotion gates, backtest jobs, risk monitoring, trading journal, options sheet
+- **Aegis dashboard** — Walk-forward optimization, promotion gates, backtest jobs, risk monitoring, trading journal, options sheet
 - **Learning loop** — Fill learning, rolling edge, promoted params overlays, failure-pattern mining (proposals only — human-gated)
 - **Operational scripts** — Safe deploy, morning brief, daily review, weekly earn report, EOD data audit
 
@@ -83,7 +83,7 @@ Full operational guide: [docs/BUILD_REFERENCE.md](docs/BUILD_REFERENCE.md) | Dai
 ## Architecture
 
 ```text
-React Algo Lab UI (:5173 dev | :8050/ui built)
+React Aegis UI (:5173 dev | :8050/ui built)
         │  REST + SSE (/api/*)
         ▼
 FastAPI Dashboard (web/dashboard.py)  :8050
@@ -125,7 +125,7 @@ Parallel validation path: `backtesting/` — Kite/NSE/BSE EOD fetch → parquet 
 - **Backtesting** — Zerodha cost model, WFO, promotion gates, regime breakdown, Monte Carlo metrics
 - **Data layer** — Kite WebSocket + REST, parquet cache (`data/historical_cache/`), NSE/BSE EOD audit
 - **Grok skills** — 5 operational skills in `.grok/skills/fo-*` mirrored by `scripts/fo_*.py`
-- **CI** — GitHub Actions: ruff, compile check, 34 unit tests, synthetic backtest smoke
+- **CI** — GitHub Actions: ruff, compile check, 298 unit tests, synthetic backtest smoke
 
 ---
 
@@ -245,16 +245,20 @@ The hardened `StrategyParams` in `backtesting/previous_candle_backtest_strategy.
 
 ```text
 .
-├── app/                    # Trading engine (51 modules)
+├── app/                    # Trading engine (68 modules)
 │   ├── main.py             # Multi-index strategy loop
 │   ├── risk_gatekeeper.py  # Sacred risk layer
-│   ├── strategy.py         # Previous Candle Breakout
+│   ├── strategy.py         # Previous Candle Breakout (WS candle-first)
+│   ├── greeks.py           # Black-Scholes index options Greeks
+│   ├── market_context.py   # India VIX + FII/DII context
+│   ├── agent_insights.py   # Promotion + WFO + proposals snapshot
+│   ├── strategies/         # Iron condor + straddle proposals (research)
 │   └── intelligence_loop.py, regime_orchestrator.py, ...
 ├── backtesting/            # WFO, costs, promotion, cache
 ├── web/                    # FastAPI dashboard + Jinja templates
-├── frontend/               # React/TS Algo Lab (Vite)
+├── frontend/               # React/TS Aegis UI (Vite)
 ├── scripts/                # Operational CLI (fo_*, promotion, audit)
-├── tests/                  # 34 unittest modules
+├── tests/                  # 50 unittest modules (298 tests)
 ├── config/
 │   └── strategy_config.yaml
 ├── docs/                   # BUILD_REFERENCE, DEV_TESTING_GUIDE, playbooks
@@ -301,18 +305,50 @@ See `.env.example` for EOD flatten, micro-live, and dev-mode variables.
 
 ---
 
+## Aegis Ops (Flagship Tool)
+
+One command center for research + operations:
+
+```powershell
+python scripts/algo_lab_ops.py preflight      # Morning readiness (status + compliance + data)
+python scripts/algo_lab_ops.py status         # Token, market, WS, DB, promotion gates
+python scripts/algo_lab_ops.py compliance     # Code-checkable SEBI checklist
+python scripts/algo_lab_ops.py data-health    # Cache coverage + EOD audit
+python scripts/algo_lab_ops.py wfo-status     # Promotion gates per index
+python scripts/algo_lab_ops.py wfo-run --days 180 --cache-only  # Multi-index WFO
+python scripts/algo_lab_ops.py lunar          # Today's panchang metadata
+python scripts/algo_lab_ops.py insights       # Promotion + WFO + proposals snapshot
+```
+
+Dashboard ops API (when running `python run.py`):
+
+```text
+GET /api/ops/preflight   — morning readiness JSON
+GET /api/ops/status      — token, market, WS, promotion
+GET /api/ops/compliance  — SEBI checklist results
+GET /api/agent/insights  — agent insights for Aegis /ui/insights
+```
+
+See [BUILD_CHECKLIST.md](BUILD_CHECKLIST.md) for the full phased build tracker.
+
+---
+
 ## Operational Scripts
 
 | Script | Purpose |
 |--------|---------|
+| `scripts/algo_lab_ops.py` | **Unified ops hub** — preflight, compliance, data-health, WFO status |
 | `scripts/fo_safe_deploy.py` | Pre-deployment safety checklist |
 | `scripts/fo_market_brief.py` | Morning market regime brief |
 | `scripts/fo_daily_review.py` | End-of-day session quality report |
 | `scripts/fo_weekly_earn_report.py` | Weekly improvement aggregation |
 | `scripts/fo_failure_pattern_miner.py` | Retail failure pattern mining → proposals |
-| `scripts/run_promotion_wfo.py` | Walk-forward + promotion gates |
+| `scripts/run_promotion_wfo.py` | Walk-forward + promotion gates (single index) |
+| `scripts/run_multi_index_wfo.py` | WFO across NIFTY/BANKNIFTY/SENSEX |
 | `scripts/eod_data_audit.py` | Cache vs NSE bhavcopy audit |
 | `scripts/lunar_calendar.py` | Panchang + astronomical lunar metadata for backtest research |
+| `scripts/fetch_market_context.py` | India VIX + FII/DII → `data/market_context.json` |
+| `scripts/db_migrate.py` | Apply Postgres migrations when `DATABASE_URL` is set |
 
 Each mirrors a Grok skill in `.grok/skills/`. See [AGENTS_AND_SKILLS.md](AGENTS_AND_SKILLS.md).
 
@@ -328,9 +364,10 @@ The system intentionally **fails closed**.
 
 ## Known Limitations
 
-- Postgres/Redis provisioned in `docker-compose.yml` but not wired into app logic
-- Options modules (`options_*.py`) are scaffolding, not live-traded
-- Learning/agent layer proposes; humans still gate capital
+- Postgres dual-write available (`PERSISTENCE_BACKEND=dual`) but optional; Redis not wired
+- Options modules (`options_*.py`, `strategies/*`) are research/proposal scaffolding — not live-traded
+- Learning/agent layer proposes; humans still gate capital (`submit_wfo_candidate` human-gated)
+- Multi-index WFO promotion not yet passed — do not size up until `wfo-status` is green
 - Not production-ready for real money
 
 ---
@@ -341,12 +378,14 @@ The system intentionally **fails closed**.
 |-----|----------|
 | [docs/BUILD_REFERENCE.md](docs/BUILD_REFERENCE.md) | How to run everything |
 | [MORNING_TRADING_GUIDE.md](MORNING_TRADING_GUIDE.md) | Daily ops |
+| [docs/EXPIRY_GAMMA_CAUTION.md](docs/EXPIRY_GAMMA_CAUTION.md) | Expiry-day levels 0/1/2, cutoff, optional gamma proxy |
 | [docs/DEV_TESTING_GUIDE.md](docs/DEV_TESTING_GUIDE.md) | Closed-market dev |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Current vs target architecture |
 | [VISION_AND_STRATEGY.md](VISION_AND_STRATEGY.md) | Founder vision |
 | [AGENTS_AND_SKILLS.md](AGENTS_AND_SKILLS.md) | Grok skills playbook |
 | [ROADMAP.md](ROADMAP.md) | Phase tracking |
 | [KITE_INTEGRATION.md](KITE_INTEGRATION.md) | Broker integration |
+| [COMPLIANCE.md](COMPLIANCE.md) | SEBI algo checklist + pre-live gates |
 | [backtesting/DOCUMENTATION.md](backtesting/DOCUMENTATION.md) | Validation oracle |
 
 ---

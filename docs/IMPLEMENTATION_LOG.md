@@ -1,4 +1,4 @@
-# Implementation Log — NiftyFuturesAlgo
+# Aegis — Implementation Log
 
 Chronological record of shipped changes. Use this to remember what was built, why, and how to verify.
 
@@ -133,3 +133,118 @@ python -m unittest discover -s tests -v
 - Do not enable live options until Phase 4 gates pass
 - Do not bypass `RiskGatekeeper` / `fo_rules_engine` for entries
 - Do not treat synthetic WFA results as deployment-ready
+
+---
+
+## Phase 5 — Options-Only Runtime & API Performance (2026-06-17)
+
+Audit and fixes after Options Sheet tab showed "Cannot reach API on port 8050", stale yesterday ledger/events, futures terminal noise with `FUTURES_TRADING_ENABLED=false`, and UI lag.
+
+### Root causes (confirmed)
+
+| Symptom | Root cause |
+|---------|------------|
+| "Cannot reach API on port 8050" on Options Sheet | Global `/health` poll fails when the single uvicorn worker event loop is blocked by synchronous Kite calls in `external-signals` handlers — not a dead server |
+| Algo events / ledger show yesterday | Dashboard used `trade_ledger.tail()` (last N lines, any day); JSONL persists across days |
+| `[3-INDEX PAPER]` FUT logs with futures paused | `FUTURES_TRADING_ENABLED=false` only gates `strat.run_once()` — monitoring stack (strategies, WS, snapshots, terminal) still ran |
+| UI lag | Request storm on Options Sheet + blocking handlers on asyncio loop |
+
+### Backend changes
+
+**`app/main.py` — options-only mode**
+- When `futures_trading_enabled()` is false: skip 3-index strategy init, futures WS subscriptions, per-loop `get_signal_snapshot()`, `[3-INDEX PAPER]` terminal block, and EOD MIS flatten
+- Options legs engine + iron condor cycle unchanged; terminal shows `[OPTIONS-ONLY]` + `[6-LEG OPTIONS]` / `[OPTIONS ALGO]` only
+
+**`app/trade_ledger.py`**
+- `read_events_today()` — newest-first events for current IST day
+- `_event_date_ist()` — legacy rows without `date_ist` fall back to `ts` in IST
+
+**`web/dashboard.py`**
+- `_ledger_events_today()` helper; all live dashboard reads (`recent_execution`, SSE, `/api/status`) filter to today IST
+- `GET /api/trades?date=` — defaults to today IST (was unfiltered `tail()`)
+- External-signals handlers (`get`, `premiums`, `evaluate`, `save`) run in `asyncio.to_thread` so `/health` and SSE stay responsive
+- Ops endpoints (`/api/ops/preflight`, `status`, `compliance`) also use `to_thread`
+- SSE payload now includes `options_legs` from in-memory engine (fast path)
+
+### Frontend changes
+
+**`frontend/src/api/client.ts`**
+- `getExternalSignals(date, { withPnl: false })` — fast sheet load without blocking Kite PnL
+- `getTrades` / `getTradesCached` — include `date=todayIst()` in URL and cache key
+
+**`frontend/src/pages/ExternalSignals.tsx`**
+- Two-phase load: sheet first (no PnL), premiums in background
+- `OptionsLegsPanel` receives SSE `stream.options_legs` via outlet context
+- Auto-evaluate interval 30s → 60s
+
+**`frontend/src/components/OptionsAlgoPanel.tsx`**
+- Client-side today filter on algo events and ledger (defense in depth)
+
+**`frontend/src/components/EngineBanner.tsx`**
+- Clearer message when already on `:8050/ui` (overload vs not running)
+
+**`frontend/src/components/OptionsLegsPanel.tsx`**
+- Poll interval 60s when SSE legs are available (was 15s always)
+
+### Verify
+
+```powershell
+# Restart engine (rebuilds UI if needed)
+python run.py --dev
+
+# Open built UI (recommended — same origin as API)
+start http://127.0.0.1:8050/ui/options-sheet
+
+# Health must return quickly even while sheet loads
+curl http://127.0.0.1:8050/health
+
+# Trades default to today IST only
+curl "http://127.0.0.1:8050/api/trades?limit=10"
+
+python -m pytest tests/test_dashboard_options_events.py -q
+```
+
+### Expected terminal with futures off
+
+```
+[MAIN] === FUTURES TRADING PAUSED (FUTURES_TRADING_ENABLED=false) ===
+[MAIN] Futures strategies skipped — options-only mode (spot + option legs)
+...
+[OPTIONS-ONLY] 09:51:24 | futures paused — options desk active
+[6-LEG OPTIONS] 09:51:25
+```
+
+No `[3-INDEX PAPER]` or `FUT:24075` lines unless `FUTURES_TRADING_ENABLED=true`.
+
+### Follow-up — intermittent "API down" / SSE stream down (2026-06-17 PM)
+
+**Root cause (confirmed in profiling):**
+- SSE did not send any bytes until the first snapshot finished (~650ms+, up to 15s when thread pool saturated) → browser `EventSource` looked dead
+- `read_events_today()` scanned the full 10k-line JSONL on hot paths (SSE every 3s + status polls)
+- `/api/trades` ran ledger I/O on the asyncio event loop (blocking `/health` under load)
+- UI treated **one** failed `/health` poll as total outage
+
+**Additional fixes:**
+- `trade_ledger._read_events_tail_filtered()` — today reads scan tail only (~37ms vs ~180ms)
+- SSE sends `: connected` heartbeat immediately; payload cached 2.5s; interval 5s
+- Dedicated `ThreadPoolExecutor` (20 workers) via FastAPI lifespan
+- `/api/trades` moved to `asyncio.to_thread`
+- Frontend: health requires 3 consecutive failures before "API down"; health timeout 15s; SSE stale window 30s; `onopen` counts as connected
+
+**You must restart `run.py` after pulling these changes** — the running process does not hot-reload dashboard code.
+
+### Kite "Offline" / Feed unavailable fix (2026-06-17 PM — final)
+
+**Root cause:** Kite token was **valid** but UI showed offline because:
+- Each API call created a **new** `KiteConnect` → forced full NFO+BFO instrument reload
+- `/api/kite/status` hit `kite.profile()` on every 45s poll with **8s client timeout**
+- Options panels fired duplicate heavy Kite calls → 20s timeouts → "Feed unavailable"
+
+**Fixes:**
+- `web/dashboard.py` — singleton Kite client, 45s status cache, `?quick=true` uses engine `TokenManager`
+- `app/instruments_manager.py` — `bind()` compares access token, not object identity
+- `app/options_strategy_runner.py` — full algo status skips duplicate ticker fetch
+- `app/main.py` — late WS start always subscribes option leg tokens (options-only mode)
+- `frontend` — Kite status cached 30s, stale-not-null on timeout, fast-only algo poll
+
+**Daily Kite ritual (Zerodha):** token expires ~**6 AM IST** — after **07:35 IST** run `python generate_token.py` or Settings → Auto Login, then restart `run.py`.

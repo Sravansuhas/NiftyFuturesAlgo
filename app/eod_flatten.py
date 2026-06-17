@@ -95,6 +95,7 @@ def execute_eod_mis_flatten(
     strategies: Optional[Dict[str, Any]] = None,
     force_dry: Optional[bool] = None,
     reason: str = "eod_mis_flatten",
+    for_date: Optional[date] = None,
 ) -> Dict[str, Any]:
     """Flatten all open multi-symbol MIS positions (paper or live)."""
     from .multi_symbol_risk import multi_risk_manager as default_mgr
@@ -115,9 +116,11 @@ def execute_eod_mis_flatten(
                 "closed_positions": [],
             }
 
+    mark_day = for_date or now_ist().date()
+
     open_before = mgr.count_open_positions()
     if open_before == 0:
-        _mark_flattened()
+        _mark_flattened(mark_day)
         return {
             "flattened": True,
             "skipped": True,
@@ -206,7 +209,7 @@ def execute_eod_mis_flatten(
     except Exception as exc:
         logger.debug("[EOD] Risk state save note: %s", exc)
 
-    _mark_flattened()
+    _mark_flattened(mark_day)
     audit_logger.record("eod.flatten", {
         "reason": reason,
         "open_before": open_before,
@@ -264,4 +267,5 @@ def maybe_run_eod_flatten(
         kite=kite,
         strategies=strategies,
         reason="eod_mis_flatten_scheduled",
+        for_date=current.date(),
     )

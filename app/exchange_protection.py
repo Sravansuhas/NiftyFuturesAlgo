@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from kiteconnect import KiteConnect
 
 from .audit_logger import audit_logger
+from .order_tags import resolve_protection_tag
 from .risk_gatekeeper import RiskGatekeeper
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,19 @@ class ExchangeProtectionManager:
         exit_side = "SELL" if position_side == "LONG" else "BUY"
 
         try:
+            from .kite_rate_limit import order_burst_tracker, order_limiter
+
+            allowed, burst_count = order_burst_tracker.try_acquire()
+            if not allowed:
+                return {
+                    "success": False,
+                    "order_id": None,
+                    "message": (
+                        f"Protection order rate limit: {burst_count} orders in last 10s "
+                        f"(max {order_burst_tracker.max_per_10s})"
+                    ),
+                }
+            protection_tag = resolve_protection_tag("SLM")
             order_limiter.wait()
             order_id = kite.place_order(
                 variety="regular",
@@ -123,7 +137,7 @@ class ExchangeProtectionManager:
                 order_type="SL-M",
                 trigger_price=float(trigger_price),
                 validity="DAY",
-                tag="NFALGO-SLM",
+                tag=protection_tag,
             )
             audit_logger.record("protection.placed", {
                 "order_id": order_id,

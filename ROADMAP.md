@@ -1,4 +1,4 @@
-# NiftyFuturesAlgo — Roadmap (Post Vision Lock)
+# Aegis — Roadmap (Post Vision Lock)
 
 **Version**: 1.1 — June 2026 (Updated after live paper runs)
 

@@ -19,7 +19,9 @@ import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger("NiftyFuturesAlgo.Diagnostics")
+from app.branding import LOG_NAMESPACE
+
+logger = logging.getLogger(f"{LOG_NAMESPACE}.Diagnostics")
 
 _rejection_throttle: Dict[str, float] = {}
 _last_gate_summary: Dict[str, str] = {}

@@ -27,7 +27,16 @@ from .token_manager import TokenManager
 from .market_calendar import is_market_open, is_real_market_open, now_ist
 from .state_persistence import load_strategy_state, save_strategy_state, clear_strategy_state
 from .data_feed import KiteWebSocketFeed
+from .candle_builder import CandleBuilder
 from .instruments_manager import instruments_manager
+from .external_signals import external_signals_store, OPTION_LEG_SPECS, leg_key
+from .options_legs_engine import options_legs_engine, get_all_snapshots as get_options_leg_snapshots
+from .options_strategy_runner import (
+    futures_trading_enabled,
+    options_trading_enabled,
+    run_options_cycle,
+)
+from .config_loader import get_options_config
 
 
 POLL_INTERVAL_SECONDS = 10
@@ -36,6 +45,10 @@ POLL_INTERVAL_SECONDS = 10
 FAST_POLL_SECONDS = 5
 FAST_POLL_DURATION = 120  # seconds
 RECON_INTERVAL_SECONDS = 15
+OPTIONS_TICK_INTERVAL = 5
+OPTIONS_EVAL_INTERVAL = 30
+OPTIONS_WS_REFRESH_INTERVAL = 60
+OPTIONS_STRATEGY_INTERVAL = int(os.getenv("OPTIONS_STRATEGY_INTERVAL", "300"))
 
 
 def _flush_state_on_shutdown(strategies, multi_risk_manager) -> None:
@@ -135,34 +148,45 @@ def _init_trade_ledger_session(force_dry: bool) -> None:
 
 def _verify_price_feeds(strategies, ws_feed, kite) -> None:
     """Cross-check REST vs WebSocket futures LTP and show spot index for comparison."""
-    from .instruments_manager import instruments_manager, ltp_key
+    from .instruments_manager import INDEX_SPOT_LTP_KEYS, instruments_manager, ltp_key
 
-    print("\n[PRICE CHECK] Futures LTP vs Kite index spot (compare same contract on Kite watchlist):")
+    print("\n[STARTUP FEED] One-time check — engine prices use front-month FUT (not index spot on Kite charts):")
+    batch_keys: list = []
+    key_meta: list = []
     for sym, strat in strategies.items():
         if not strat.symbol:
             continue
         exchange = getattr(strat, "exchange", "BFO" if sym == "SENSEX" else "NFO")
-        rest_fut = instruments_manager.fetch_ltp(strat.symbol, exchange)
+        fut_key = ltp_key(strat.symbol, exchange)
+        spot_key = INDEX_SPOT_LTP_KEYS.get(sym)
+        batch_keys.extend(k for k in (fut_key, spot_key) if k)
+        key_meta.append((sym, strat, exchange, fut_key, spot_key))
+
+    rest_prices = instruments_manager.fetch_ltp_batch(batch_keys) if batch_keys else {}
+
+    for sym, strat, exchange, fut_key, spot_key in key_meta:
+        rest_fut = rest_prices.get(fut_key)
         ws_fut = None
         if ws_feed and strat.instrument_token:
             ws_fut, _age = ws_feed.get_last_price_with_age(int(strat.instrument_token))
-        spot = instruments_manager.fetch_index_spot_ltp(sym)
+        spot = rest_prices.get(spot_key) if spot_key else None
         basis = round(rest_fut - spot, 2) if rest_fut and spot else None
         print(
-            f"  {sym:10} {strat.symbol:18} | REST={rest_fut or '—':>10} "
-            f"WS={ws_fut or '—':>10} | SPOT={spot or '—':>10} basis={basis if basis is not None else '—'}"
+            f"  {sym:10} {strat.symbol:18} (token {strat.instrument_token}) | "
+            f"FUT REST={rest_fut or '—':>10} WS={ws_fut or '—':>10} | "
+            f"INDEX SPOT={spot or '—':>10} basis={basis if basis is not None else '—'}"
         )
         if rest_fut and ws_fut and abs(rest_fut - ws_fut) > 2.0:
             logger.warning(
                 "[PRICE] %s REST/WS mismatch: REST=%.2f WS=%.2f (token=%s key=%s)",
-                sym, rest_fut, ws_fut, strat.instrument_token, ltp_key(strat.symbol, exchange),
+                sym, rest_fut, ws_fut, strat.instrument_token, fut_key,
             )
         if rest_fut is None and ws_fut is None:
             logger.warning(
                 "[PRICE] %s no live price — check token %s and Kite quote key %s",
-                sym, strat.instrument_token, ltp_key(strat.symbol, exchange),
+                sym, strat.instrument_token, fut_key,
             )
-    print("  Tip: Kite chart default is often INDEX spot; our engine uses the front-month FUT contract above.\n")
+    print("  (This block prints once at startup only — not repeated during the session.)\n")
 
 
 def _print_trading_mode_banner():
@@ -181,6 +205,13 @@ def _print_trading_mode_banner():
 
 
 def main():
+    try:
+        from .trading_controls import apply_runtime_to_environment
+
+        apply_runtime_to_environment()
+    except Exception as tc_exc:
+        logger.warning("[MAIN] Trading controls load note: %s", tc_exc)
+
     _print_trading_mode_banner()
 
     # Live trading requires explicit double confirmation (safety gate)
@@ -287,7 +318,10 @@ def main():
     if use_promoted:
         print("[MAIN] USE_PROMOTED_PARAMS=true — per-index WFA overlays will be merged at startup")
 
-    symbols = ["NIFTY", "BANKNIFTY", "SENSEX"]
+    fut_on = futures_trading_enabled()
+    opt_on = options_trading_enabled()
+
+    symbols = ["NIFTY", "BANKNIFTY", "SENSEX"] if fut_on else []
     strategies = {}
     for sym in symbols:
         paper_params, overlay_meta = merge_paper_params(
@@ -305,6 +339,9 @@ def main():
         strat = PreviousCandleBreakoutStrategy(kite, paper_params=paper_params, risk_manager=multi_risk_manager)
         strat._initialize_index_future(sym)   # This now also does full per-symbol seeding of prev_high/prev_low/ATR
         strategies[sym] = strat
+
+    if not fut_on:
+        print("[MAIN] Futures strategies skipped — options-only mode (spot + option legs)")
 
     from .order_lifecycle import order_lifecycle
     order_lifecycle.bind_kite(kite)
@@ -334,8 +371,19 @@ def main():
 
     # Lightweight startup note (full params available in dashboard)
     print("[MAIN] Paper trading engine initialized (see dashboard for full params & diagnostics)")
-    print("[MAIN] === MONDAY PAPER MODE: NIFTY + BANKNIFTY + SENSEX FUTURES ONLY ===")
-    print("[MAIN] All orders are FORCED to DRY-RUN. No real capital at risk.")
+    opts_cfg = get_options_config()
+    if opt_on:
+        print("[MAIN] === OPTIONS TRADING ENABLED — Iron Condor via RiskGatekeeper ===")
+        print(f"[MAIN] Underlying: {opts_cfg.get('underlying', 'NIFTY')} | "
+              f"max structures/day: {opts_cfg.get('max_structures_per_day', 1)}")
+    if fut_on:
+        print("[MAIN] === FUTURES TRADING ENABLED: NIFTY + BANKNIFTY + SENSEX ===")
+    else:
+        print("[MAIN] === FUTURES TRADING PAUSED (FUTURES_TRADING_ENABLED=false) ===")
+    if force_dry:
+        print("[MAIN] All orders are FORCED to DRY-RUN. No real capital at risk.")
+    elif opt_on:
+        print("[MAIN] !!! OPTIONS LIVE MODE — multi-leg orders may use real capital !!!")
 
     # Phase 4C: optional non-blocking daily session report at startup
     if os.getenv("AUTO_DAILY_REVIEW", "").strip().lower() in {"1", "true", "yes", "on"}:
@@ -358,11 +406,6 @@ def main():
         threading.Thread(target=_auto_daily_review, daemon=True, name="auto-daily-review").start()
         print("[MAIN] AUTO_DAILY_REVIEW=true — daily session report queued (background)")
 
-    # Contract selection summary (futures LTP — not index spot)
-    print("\n[CONTRACTS] Active futures selected (app prices = FUT LTP, not NIFTY 50 spot):")
-    for sym, strat in strategies.items():
-        print(f"  {sym:10} → {strat.symbol:20} (token: {strat.instrument_token})")
-
     # === WebSocket Data Feed (threaded KiteTicker — official Zerodha pattern) ===
     ws_feed = None
     ws_token_generation = token_manager.token_reload_generation
@@ -370,19 +413,39 @@ def main():
     enable_ws = os.getenv("ENABLE_WEBSOCKET", "true").lower() not in {"0", "false", "no"}
     if enable_ws and access_token and token_manager.token_valid:
         try:
-            ws_feed = KiteWebSocketFeed(KITE_API_KEY, access_token)
+            ws_feed = KiteWebSocketFeed(
+                KITE_API_KEY,
+                access_token,
+                candle_builder=CandleBuilder(intervals=["1m", "5m", "15m"]),
+            )
             ws_feed.start()
-            tokens = [s.instrument_token for s in strategies.values() if s.instrument_token]
-            if tokens:
-                ws_feed.subscribe(tokens)
+            from .data_feed import register_ws_feed
+            register_ws_feed(ws_feed)
+            fut_tokens = [s.instrument_token for s in strategies.values() if s.instrument_token]
+            if fut_tokens:
+                ws_feed.subscribe(fut_tokens)
                 for strat in strategies.values():
                     strat.ws_feed = ws_feed
-                logger.info(f"[WS] Subscribed to {len(tokens)} instruments (threaded mode)")
+                    if ws_feed.get_candle_builder() is not None:
+                        strat._seed_previous_candle()
+                logger.info(f"[WS] Subscribed to {len(fut_tokens)} futures instruments (threaded mode)")
+            try:
+                today_sheet = external_signals_store.get()
+                options_legs_engine.refresh_ws_subscriptions(
+                    ws_feed, today_sheet, futures_tokens=fut_tokens or None,
+                )
+            except Exception as opt_ws_err:
+                logger.warning("[OptionsLegs] Initial WS subscribe note: %s", opt_ws_err)
+            if fut_on and fut_tokens:
                 time.sleep(2.0)
                 _verify_price_feeds(strategies, ws_feed, kite)
+            elif opt_on:
+                print("[MAIN] Options-only WS — option leg tokens subscribed (no futures feed)")
         except Exception as ws_err:
             logger.warning(f"[WS] Failed to start WebSocket feed: {ws_err}. Falling back to REST polling.")
             ws_feed = None
+            from .data_feed import register_ws_feed
+            register_ws_feed(None)
     elif enable_ws and not access_token:
         logger.warning("[WS] WebSocket enabled but no valid KITE access token — using REST polling.")
     elif enable_ws and access_token and not token_manager.token_valid:
@@ -390,7 +453,7 @@ def main():
     else:
         logger.info("[WS] WebSocket disabled via ENABLE_WEBSOCKET=false — REST polling active.")
 
-    if ws_feed is None and kite:
+    if ws_feed is None and kite and fut_on:
         _verify_price_feeds(strategies, None, kite)
 
     # === WebSocket Migration Preparation (Kite Best Practice) ===
@@ -400,12 +463,20 @@ def main():
     # When ENABLE_WEBSOCKET=true, the system will attempt proper WS for lower latency + better SENSEX freshness.
     # All price sources are already logged via diagnostic_logger for easy bottleneck analysis.
 
+    engine_started_at = time.time()
     last_recon = 0.0
     last_token_check = 0.0
     TOKEN_CHECK_INTERVAL = 600  # FAQ: detect session expiry without waiting for order failure
     last_day = None
     last_status = 0.0
     last_terminal_summary = 0.0
+    last_token_warning = 0.0
+    last_options_tick = 0.0
+    last_options_eval = 0.0
+    last_options_ws_refresh = 0.0
+    last_options_strategy = 0.0
+    last_options_sheet_key: Optional[str] = None
+    options_sheet_working: Optional[dict] = None
     STATUS_INTERVAL = 600  # seconds (10 minutes) — clean terminal by default; use dashboard for live view
     TERMINAL_SUMMARY_SEC = max(15, int(os.getenv("TERMINAL_SUMMARY_SEC", "60")))
 
@@ -418,24 +489,42 @@ def main():
             # Get timestamp at the very start of the loop to prevent UnboundLocalError
             now = time.time()
 
-            # EOD MIS flatten before broker auto square-off (~15:15 IST)
-            try:
-                from .eod_flatten import maybe_run_eod_flatten
+            # EOD MIS flatten before broker auto square-off (~15:15 IST) — futures only
+            if fut_on:
+                try:
+                    from .eod_flatten import maybe_run_eod_flatten
 
-                eod_result = maybe_run_eod_flatten(
-                    multi_risk_manager,
-                    kite=kite,
-                    strategies=strategies,
-                )
-                if eod_result.get("flattened") and not eod_result.get("skipped"):
-                    print(
-                        f"[EOD] MIS flatten: closed {len(eod_result.get('closed_positions', []))} position(s)"
+                    eod_result = maybe_run_eod_flatten(
+                        multi_risk_manager,
+                        kite=kite,
+                        strategies=strategies,
                     )
-            except Exception as eod_exc:
-                logger.warning("[EOD] Flatten check failed (non-fatal): %s", eod_exc)
+                    if eod_result.get("flattened") and not eod_result.get("skipped"):
+                        print(
+                            f"[EOD] MIS flatten: closed {len(eod_result.get('closed_positions', []))} position(s)"
+                        )
+                except Exception as eod_exc:
+                    logger.warning("[EOD] Flatten check failed (non-fatal): %s", eod_exc)
 
-            # === Run all 3 index strategies (Monday paper trading) ===
-            if _engine_should_evaluate_signals():
+            # EOD options flatten — close open multi-leg structures before session end
+            if options_trading_enabled():
+                try:
+                    from .options_eod_flatten import maybe_run_options_eod_flatten
+
+                    opt_eod_result = maybe_run_options_eod_flatten(
+                        kite=kite,
+                        force_dry_run=force_dry,
+                    )
+                    if opt_eod_result.get("flattened") and not opt_eod_result.get("skipped"):
+                        print(
+                            f"[OPTIONS EOD] Flatten: closed "
+                            f"{len(opt_eod_result.get('closed_structures', []))} structure(s)"
+                        )
+                except Exception as opt_eod_exc:
+                    logger.warning("[OPTIONS EOD] Flatten check failed (non-fatal): %s", opt_eod_exc)
+
+            # === Futures strategies (paused when FUTURES_TRADING_ENABLED=false) ===
+            if futures_trading_enabled() and _engine_should_evaluate_signals():
                 for sym, strat in strategies.items():
                     try:
                         strat.run_once()
@@ -444,64 +533,197 @@ def main():
                         state_machine.set_state(SystemState.TRADING_DISABLED)
                     except Exception as se:
                         print(f"Strategy step error [{sym}] (non-fatal): {se}")
-            elif last_terminal_summary == 0.0 or (now - last_terminal_summary >= TERMINAL_SUMMARY_SEC):
-                print("[MAIN] Market closed — engine idle (set ENGINE_IDLE_WHEN_CLOSED=false to disable)")
+            # === Six-leg options premium engine (external signals sheet) ===
+            fresh_options_sheet = external_signals_store.get()
+            sheet_key = options_legs_engine._sheet_resolve_key(fresh_options_sheet)
+            if (
+                options_sheet_working is None
+                or sheet_key != last_options_sheet_key
+                or options_legs_engine.consume_external_save()
+            ):
+                options_sheet_working = fresh_options_sheet
+            if (
+                is_market_open()
+                and ws_feed is not None
+                and (
+                    last_options_ws_refresh == 0.0
+                    or now - last_options_ws_refresh >= OPTIONS_WS_REFRESH_INTERVAL
+                    or sheet_key != last_options_sheet_key
+                )
+            ):
+                try:
+                    fut_tokens = (
+                        [s.instrument_token for s in strategies.values() if s.instrument_token]
+                        if fut_on else None
+                    )
+                    options_legs_engine.refresh_ws_subscriptions(
+                        ws_feed, options_sheet_working, futures_tokens=fut_tokens,
+                    )
+                    last_options_ws_refresh = now
+                    last_options_sheet_key = sheet_key
+                except Exception as opt_ws_err:
+                    logger.debug("[OptionsLegs] WS refresh skipped: %s", opt_ws_err)
 
-            # Rich per-symbol logging + live snapshots (very important for UX)
-            # Snapshots updated EVERY loop (cheap, makes dashboard cards + T/SL live for all 3)
-            # Pretty terminal block only every ~7s or warm-up to keep terminal calm
-            for sym, strat in strategies.items():
-                snap = strat.get_signal_snapshot()
-                live_snapshots.update_snapshot(sym, snap)
+            if (
+                is_market_open()
+                and ws_feed is not None
+                and (last_options_tick == 0.0 or now - last_options_tick >= OPTIONS_TICK_INTERVAL)
+            ):
+                try:
+                    options_sheet_working = options_legs_engine.tick_from_ws(ws_feed, options_sheet_working)
+                    options_legs_engine.update_all_snapshots(options_sheet_working)
+                    last_options_tick = now
+                except Exception as opt_tick_err:
+                    logger.debug("[OptionsLegs] tick_from_ws skipped: %s", opt_tick_err)
+
+            if is_market_open() and (last_options_eval == 0.0 or now - last_options_eval >= OPTIONS_EVAL_INTERVAL):
+                try:
+                    options_sheet_working, _prem = options_legs_engine.run_evaluation(
+                        options_sheet_working, ws_feed=ws_feed, persist=True,
+                    )
+                    options_legs_engine.update_all_snapshots(options_sheet_working)
+                    last_options_eval = now
+                except Exception as opt_eval_err:
+                    logger.warning("[OptionsLegs] run_evaluation note: %s", opt_eval_err)
+
+            # === Automated options structures (Iron Condor v1.0) ===
+            if options_trading_enabled() and is_market_open():
+                strat_interval = int(
+                    get_options_config().get("evaluation_interval_sec") or OPTIONS_STRATEGY_INTERVAL
+                )
+                if last_options_strategy == 0.0 or now - last_options_strategy >= strat_interval:
+                    try:
+                        from .market_context import load_market_context
+
+                        mctx = load_market_context()
+                        opt_result = run_options_cycle(
+                            kite,
+                            force_dry_run=force_dry,
+                            ws_feed=ws_feed,
+                            market_context=mctx,
+                        )
+                        last_options_strategy = now
+                        if opt_result.get("action") == "open" and opt_result.get("success"):
+                            print(
+                                f"[OPTIONS] OPENED {opt_result.get('structure_id')} — "
+                                f"{opt_result.get('message')}"
+                            )
+                        elif opt_result.get("action") == "close" and opt_result.get("success"):
+                            print(
+                                f"[OPTIONS] CLOSED {opt_result.get('structure_id')} — "
+                                f"{opt_result.get('message')}"
+                            )
+                        elif opt_result.get("action") and not opt_result.get("success"):
+                            logger.warning("[OPTIONS] Cycle failed: %s", opt_result.get("message"))
+                    except Exception as opt_strat_err:
+                        logger.warning("[OPTIONS] Strategy cycle note: %s", opt_strat_err)
+
+            # Futures snapshots + terminal — skipped in options-only mode
+            if fut_on:
+                for sym, strat in strategies.items():
+                    snap = strat.get_signal_snapshot()
+                    live_snapshots.update_snapshot(sym, snap)
 
             if last_terminal_summary == 0.0 or (now - last_terminal_summary >= TERMINAL_SUMMARY_SEC):
-                print("\n" + "="*70)
-                print(f"[3-INDEX PAPER] {dt.datetime.now().strftime('%H:%M:%S')} | FORCED DRY-RUN MODE")
-                for sym, strat in strategies.items():
-                    snap = live_snapshots.get_snapshot(sym) or strat.get_signal_snapshot()
-                    color = "🟢" if snap.get('proposed') == "LONG" else ("🔴" if snap.get('proposed') == "SHORT" else "⚪")
-                    source = snap.get("data_source", "UNKNOWN")
-                    # Prefer fast responsive ATR in the demo print so it doesn't look hardcoded/locked
-                    display_atr = snap.get('fast_atr') or snap.get('atr', 0)
-                    conf_val = snap.get('confidence', 0)
-                    conf_note = ""
-                    if snap.get('position_health_conf') is not None:
-                        conf_note = " (pos health)"
-                    age = snap.get('data_age_seconds', 0)
-                    age_str = f" age:{age}s" if age > 8 else ""
-                    gate = snap.get('gate_summary') or ""
-                    gate_str = f" | {gate}" if gate else ""
-                    contract = snap.get('contract') or snap.get('symbol') or sym
-                    spot = snap.get('spot_ltp')
-                    basis = snap.get('spot_basis')
-                    spot_str = ""
-                    if spot:
-                        spot_str = f" | Spot:{spot:8.1f} basis:{basis:+.1f}" if basis is not None else f" | Spot:{spot:8.1f}"
-                    t_val = snap.get('target', 0) or 0
-                    sl_val = snap.get('stop_loss', 0) or 0
-                    t_str = f"{t_val:8.0f}" if t_val else "       —"
-                    sl_str = f"{sl_val:8.0f}" if sl_val else "       —"
-                    conf_str = f"{conf_val:.0%}" if snap.get('proposed') not in ('FLAT', 'HOLD', None) and conf_val else "  —"
-                    print(f"{color} {sym:10} [{source:9}] {contract:16} | {snap.get('proposed','?'):6} | "
-                          f"FUT:{snap.get('ltp',0):8.1f}{spot_str} | ATR:{display_atr:5.1f} | "
-                          f"T:{t_str} / SL:{sl_str} | Conf:{conf_str}{conf_note}{age_str} | "
-                          f"Regime:{(snap.get('regime') or {}).get('volatility','?')}{gate_str}")
-
-                    # Warning only on first few simulated prints during open market
-                    if source == "SIMULATED" and is_market_open():
-                        if not hasattr(strat, '_sim_warning_shown'):
-                            logger.warning(f"[DATA] {sym} using SIMULATED data while market OPEN. Real data not flowing yet.")
-                            setattr(strat, '_sim_warning_shown', True)
-                print("="*70)
-                last_terminal_summary = now
-
-                try:
-                    from .diagnostic_logger import diag
-                    diag.get_logger().debug(
-                        f"3-INDEX BLOCK @ {dt.datetime.now().strftime('%H:%M:%S')} | {len(strategies)} symbols"
+                if not is_market_open():
+                    print(
+                        f"[MAIN] Market closed — engine idle "
+                        f"({dt.datetime.now().strftime('%H:%M:%S')})"
                     )
-                except Exception:
-                    pass
+                    last_terminal_summary = now
+                else:
+                    if fut_on:
+                        print("\n" + "="*70)
+                        print(f"[3-INDEX PAPER] {dt.datetime.now().strftime('%H:%M:%S')} | FORCED DRY-RUN MODE")
+                        for sym, strat in strategies.items():
+                            snap = live_snapshots.get_snapshot(sym) or strat.get_signal_snapshot()
+                            color = "🟢" if snap.get('proposed') == "LONG" else ("🔴" if snap.get('proposed') == "SHORT" else "⚪")
+                            source = snap.get("data_source", "UNKNOWN")
+                            display_atr = snap.get('fast_atr') or snap.get('atr', 0)
+                            conf_val = snap.get('confidence', 0)
+                            conf_note = ""
+                            if snap.get('position_health_conf') is not None:
+                                conf_note = " (pos health)"
+                            age = snap.get('data_age_seconds', 0)
+                            age_str = f" age:{age}s" if age > 8 else ""
+                            gate = snap.get('gate_summary') or ""
+                            gate_str = f" | {gate}" if gate else ""
+                            contract = snap.get('contract') or snap.get('symbol') or sym
+                            spot = snap.get('spot_ltp')
+                            basis = snap.get('spot_basis')
+                            spot_str = ""
+                            if spot:
+                                spot_str = f" | Spot:{spot:8.1f} basis:{basis:+.1f}" if basis is not None else f" | Spot:{spot:8.1f}"
+                            t_val = snap.get('target', 0) or 0
+                            sl_val = snap.get('stop_loss', 0) or 0
+                            t_str = f"{t_val:8.0f}" if t_val else "       —"
+                            sl_str = f"{sl_val:8.0f}" if sl_val else "       —"
+                            conf_str = f"{conf_val:.0%}" if snap.get('proposed') not in ('FLAT', 'HOLD', None) and conf_val else "  —"
+                            print(f"{color} {sym:10} [{source:9}] {contract:16} | {snap.get('proposed','?'):6} | "
+                                  f"FUT:{snap.get('ltp',0):8.1f}{spot_str} | ATR:{display_atr:5.1f} | "
+                                  f"T:{t_str} / SL:{sl_str} | Conf:{conf_str}{conf_note}{age_str} | "
+                                  f"Regime:{(snap.get('regime') or {}).get('volatility','?')}{gate_str}")
+
+                            if source == "SIMULATED" and is_market_open():
+                                if not hasattr(strat, '_sim_warning_shown'):
+                                    logger.warning(f"[DATA] {sym} using SIMULATED data while market OPEN. Real data not flowing yet.")
+                                    setattr(strat, '_sim_warning_shown', True)
+                        print("="*70)
+                    elif opt_on:
+                        print("\n" + "="*70)
+                        print(f"[OPTIONS-ONLY] {dt.datetime.now().strftime('%H:%M:%S')} | futures paused — options desk active")
+                        print("="*70)
+
+                    leg_snaps = get_options_leg_snapshots()
+                    if leg_snaps:
+                        leg_order = {leg_key(index, leg): i for i, (index, leg, _opt) in enumerate(OPTION_LEG_SPECS)}
+                        print(f"[6-LEG OPTIONS] {dt.datetime.now().strftime('%H:%M:%S')}")
+                        for leg_id in sorted(leg_snaps.keys(), key=lambda k: leg_order.get(k, 99)):
+                            ls = leg_snaps[leg_id]
+                            if ls.get("strike") is None and ls.get("entry") is None:
+                                continue
+                            src = ls.get("data_source") or "none"
+                            age = ls.get("data_age_seconds")
+                            age_str = f" age:{age}s" if age and age > 8 else ""
+                            ltp = ls.get("last_ltp")
+                            ltp_str = f"{ltp:7.1f}" if ltp is not None else "      —"
+                            jstat = (ls.get("journal_status") or "?")[:10]
+                            sym_short = ls.get("tradingsymbol") or "—"
+                            print(
+                                f"  {leg_id:12} [{src:4}] {sym_short:18} | "
+                                f"K{ls.get('strike') or '—':>6} | LTP:{ltp_str} | "
+                                f"E:{ls.get('entry') or '—':>5} T:{ls.get('target') or '—':>5} "
+                                f"L:{ls.get('stop_loss') or '—':>4} | {jstat}{age_str}"
+                            )
+                        print("="*70)
+
+                    if options_trading_enabled():
+                        try:
+                            from .options_positions import options_position_store
+
+                            open_structs = options_position_store.list_open()
+                            if open_structs:
+                                print(f"[OPTIONS ALGO] {dt.datetime.now().strftime('%H:%M:%S')} | "
+                                      f"{len(open_structs)} open structure(s)")
+                                for struct in open_structs:
+                                    print(
+                                        f"  {struct.structure_id} {struct.underlying} "
+                                        f"{struct.structure_type} | credit ₹{struct.entry_credit:,.0f} "
+                                        f"max_loss ₹{struct.max_loss:,.0f}"
+                                    )
+                                print("="*70)
+                        except Exception as opt_print_err:
+                            logger.debug("[OPTIONS ALGO] terminal summary skipped: %s", opt_print_err)
+
+                    last_terminal_summary = now
+
+                    try:
+                        from .diagnostic_logger import diag
+                        diag.get_logger().debug(
+                            f"3-INDEX BLOCK @ {dt.datetime.now().strftime('%H:%M:%S')} | {len(strategies)} symbols"
+                        )
+                    except Exception:
+                        pass
 
             # Global risk gates + contingency (sync multi-symbol P&L first)
             try:
@@ -548,13 +770,31 @@ def main():
                     access_token = token_manager.access_token or ""
                     if enable_ws and access_token:
                         try:
-                            ws_feed = KiteWebSocketFeed(KITE_API_KEY, access_token)
+                            ws_feed = KiteWebSocketFeed(
+                                KITE_API_KEY,
+                                access_token,
+                                candle_builder=CandleBuilder(intervals=["1m", "5m", "15m"]),
+                            )
                             ws_feed.start()
-                            tokens = [s.instrument_token for s in strategies.values() if s.instrument_token]
-                            if tokens:
-                                ws_feed.subscribe(tokens)
+                            from .data_feed import register_ws_feed
+                            register_ws_feed(ws_feed)
+                            fut_tokens = [
+                                s.instrument_token for s in strategies.values() if s.instrument_token
+                            ]
+                            if fut_tokens:
+                                ws_feed.subscribe(fut_tokens)
                                 for strat in strategies.values():
                                     strat.ws_feed = ws_feed
+                                    if ws_feed.get_candle_builder() is not None:
+                                        strat._seed_previous_candle()
+                            try:
+                                options_legs_engine.refresh_ws_subscriptions(
+                                    ws_feed,
+                                    external_signals_store.get(),
+                                    futures_tokens=fut_tokens or None,
+                                )
+                            except Exception as opt_late_err:
+                                logger.warning("[OptionsLegs] Late WS subscribe note: %s", opt_late_err)
                             ws_token_generation = token_manager.token_reload_generation
                             logger.info("[WS] Started WebSocket after token became valid")
                         except Exception as ws_start_err:
@@ -603,8 +843,8 @@ def main():
                 log_system_status(status)
                 last_status = now
 
-            # Gentle token health hint
-            if not token_manager.is_token_valid():
+            if not token_manager.is_token_valid() and now - last_token_warning >= 300:
+                last_token_warning = now
                 print("⚠️ Token may need refresh (check TokenManager)")
 
         except DataFeedError as dfe:
@@ -623,8 +863,12 @@ def main():
             _flush_state_on_shutdown(strategies, multi_risk_manager)
             break
 
-        # Use faster polling during initial warm-up when market is open
-        poll_interval = FAST_POLL_SECONDS if (now - (last_recon or now) < FAST_POLL_DURATION and is_market_open()) else POLL_INTERVAL_SECONDS
+        # Faster polling only during the first FAST_POLL_DURATION seconds after engine start
+        poll_interval = (
+            FAST_POLL_SECONDS
+            if (now - engine_started_at < FAST_POLL_DURATION and is_market_open())
+            else POLL_INTERVAL_SECONDS
+        )
         time.sleep(poll_interval)
 
     print("[MAIN] Trading loop exited cleanly.")
@@ -632,6 +876,8 @@ def main():
     if ws_feed is not None:
         try:
             ws_feed.stop()
+            from .data_feed import register_ws_feed
+            register_ws_feed(None)
             logger.info("[WS] WebSocket feed stopped cleanly")
         except Exception as ws_stop_err:
             logger.warning("[WS] Shutdown error (non-fatal): %s", ws_stop_err)

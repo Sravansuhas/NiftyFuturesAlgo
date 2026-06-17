@@ -57,8 +57,9 @@ _TREND_CLARITY = {
 _FO_MOOD_CACHE: Dict[str, Any] = {"ts": 0.0, "payload": None, "key": None}
 _FO_MOOD_CACHE_TTL_SEC = 30
 
-_MACRO_CACHE: Dict[str, Any] = {"ts": 0.0, "payload": None}
+_MACRO_CACHE: Dict[str, Any] = {"ts": 0.0, "payload": None, "version": 0}
 _MACRO_CACHE_TTL_SEC = 300
+_MACRO_CACHE_VERSION = 2  # bump when macro parser shape changes (e.g. FII/DII NSE format)
 
 
 def bust_fo_mood_cache() -> None:
@@ -68,24 +69,38 @@ def bust_fo_mood_cache() -> None:
 
 
 def fetch_macro_cached(*, force: bool = False) -> Dict[str, Any]:
-    """Wrap nse_data.fetch_macro_context with a 5-minute TTL."""
+    """Macro snapshot (VIX + FII/DII) with 5-minute TTL; VIX uses Kite fallback when NSE fails."""
     global _MACRO_CACHE
     now = time()
     if (
         not force
         and _MACRO_CACHE.get("payload")
+        and int(_MACRO_CACHE.get("version") or 0) == _MACRO_CACHE_VERSION
         and (now - float(_MACRO_CACHE.get("ts") or 0)) < _MACRO_CACHE_TTL_SEC
     ):
         return _MACRO_CACHE["payload"]
 
+    kite = None
     try:
-        from .nse_data import fetch_macro_context
+        from .instruments_manager import instruments_manager
 
-        payload = fetch_macro_context()
+        kite = instruments_manager.kite
+    except Exception:
+        kite = None
+
+    try:
+        from .market_context import fetch_india_vix
+        from .nse_data import fetch_fii_dii_flow
+
+        payload = {
+            "fetched_at": now_ist().isoformat(),
+            "vix": fetch_india_vix(kite=kite),
+            "fii_dii": fetch_fii_dii_flow(),
+        }
     except Exception:
         payload = {"fetched_at": now_ist().isoformat(), "available": False}
 
-    _MACRO_CACHE = {"ts": now, "payload": payload}
+    _MACRO_CACHE = {"ts": now, "payload": payload, "version": _MACRO_CACHE_VERSION}
     return payload
 
 
@@ -184,10 +199,12 @@ def _one_sided_strength_from_snapshot(snapshot: Optional[Dict[str, Any]]) -> Tup
 def _leg_active(side: Optional[Dict[str, Any]]) -> bool:
     if not side:
         return False
-    if side.get("strike") or side.get("entry"):
-        return True
-    status = str(side.get("status") or "").lower()
     journal = str(side.get("journal_status") or "").lower()
+    status = str(side.get("status") or "").lower()
+    if journal in ("skipped", "expired") or status == "skipped":
+        return False
+    if side.get("strike") or side.get("entry") is not None:
+        return True
     return status not in ("", "ready", "skipped") or journal in ("entered", "watching", "target_met")
 
 

@@ -1,5 +1,5 @@
 """
-Lightweight, pluggable alerting system for NiftyFuturesAlgo.
+Lightweight, pluggable alerting system for Aegis.
 
 Designed to be extremely efficient (no heavy dependencies by default).
 

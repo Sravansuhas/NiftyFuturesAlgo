@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NiftyFuturesAlgo — 3-Index Paper Trading Terminal</title>
+    <title>Aegis — 3-Index Paper Trading Terminal</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
@@ -94,7 +94,7 @@
         <div class="flex items-center gap-x-4">
             <div class="flex items-center gap-x-2">
                 <i class="fa-solid fa-globe text-emerald-400"></i>
-                <span class="font-semibold tracking-tighter text-base">NIFTY FUTURES</span>
+                <span class="font-semibold tracking-tighter text-base">AEGIS</span>
             </div>
             
             <!-- Market Status Pill (populated by JS) -->
@@ -127,7 +127,7 @@
             <a href="/backtest" 
                class="inline-flex items-center gap-x-2 px-5 py-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 transition rounded-2xl font-semibold text-sm shadow-lg shadow-emerald-900/30">
                 <i class="fa-solid fa-flask"></i>
-                <span>OPEN ALGO LAB</span>
+                <span>OPEN AEGIS</span>
             </a>
         </div>
     </div>
@@ -138,8 +138,8 @@
             <div class="flex items-center gap-x-2">
                 <i class="fa-solid fa-chart-line text-2xl text-emerald-400"></i>
                 <div>
-                    <span class="font-semibold text-xl tracking-tighter">NIFTY ALGO</span>
-                    <span class="text-xs text-gray-500 ml-1">v0.5.1</span>
+                    <span class="font-semibold text-xl tracking-tighter">AEGIS</span>
+                    <span class="text-xs text-gray-500 ml-1">v0.5.1 · risk-first Indian F&amp;O</span>
                 </div>
             </div>
             
@@ -437,6 +437,10 @@
                         </div>
                         <div class="text-xs text-gray-500">Last Recon: <span id="last-recon">—</span></div>
                     </div>
+                </div>
+                <div id="ops-preflight" class="mt-3 pt-3 border-t border-gray-800 text-xs text-gray-400">
+                    <span class="section-title">OPS PREFLIGHT</span>
+                    <div id="ops-preflight-summary" class="mt-1 font-mono">Loading…</div>
                 </div>
             </div>
         </div>
@@ -1186,17 +1190,17 @@
                     } catch(e) {}
                 };
                 evtSource.onerror = function() {
-                    // Fallback to polling if SSE fails
-                    console.warn("SSE failed, falling back to polling");
+                    // Fallback to slow polling if SSE fails (full /api/status is expensive)
+                    console.warn("SSE failed, falling back to slow polling");
                     setInterval(() => {
                         fetch('/api/status').then(r => r.json()).then(updateDashboard);
-                    }, 2500);
+                    }, 20000);
                 };
             } else {
                 // Very old browser fallback
                 setInterval(() => {
                     fetch('/api/status').then(r => r.json()).then(updateDashboard);
-                }, 2500);
+                }, 20000);
             }
 
             // Stunning live market rail (the thing users complained was missing)
@@ -1520,7 +1524,29 @@
             marketUpdateInterval = setInterval(updateMarketRail, 15000); // every 15s — lightweight and robust
         }
 
-        window.onload = initializeWithChart;
+        async function updateOpsPreflight() {
+            const el = document.getElementById('ops-preflight-summary');
+            if (!el) return;
+            try {
+                const res = await fetch('/api/ops/preflight?skip_token=false');
+                const p = await res.json();
+                const ready = p.ready ? 'READY' : 'NOT READY';
+                const tone = p.ready ? 'text-emerald-400' : 'text-amber-400';
+                const blockers = (p.blockers || []).length;
+                const warnings = (p.warnings || []).length;
+                el.className = `mt-1 font-mono ${tone}`;
+                el.textContent = `${ready} · ${p.mode || '?'} · compliance ${(p.compliance || {}).automated_passed || 0}/${(p.compliance || {}).automated_total || 0} · ${blockers} blocker(s), ${warnings} warning(s)`;
+            } catch (e) {
+                el.className = 'mt-1 font-mono text-gray-500';
+                el.textContent = 'Preflight API unavailable';
+            }
+        }
+
+        window.onload = function() {
+            initializeWithChart();
+            startMarketRail();
+            updateOpsPreflight();
+        };
     </script>
 </body>
 </html>

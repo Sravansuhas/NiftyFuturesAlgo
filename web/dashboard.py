@@ -1,5 +1,5 @@
 """
-Bloomberg Terminal Style Dashboard for NiftyFuturesAlgo
+Bloomberg Terminal Style Dashboard for Aegis — risk-first Indian F&O platform
 
 Run alongside your trading process:
     uvicorn web.dashboard:app --host 0.0.0.0 --port 8050 --reload
@@ -10,6 +10,9 @@ Features:
 - Trades, Risk, Diagnostics, System Health
 - Designed for long-running sessions (hours to full day)
 """
+
+from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, Request, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,7 +75,21 @@ except ImportError:
     risk_gatekeeper = None
     state_machine = None
 
-app = FastAPI(title="NiftyFuturesAlgo Terminal", version="0.4.0")
+_API_THREAD_POOL = ThreadPoolExecutor(
+    max_workers=max(12, int(os.getenv("API_THREAD_POOL_SIZE", "20"))),
+    thread_name_prefix="aegis-api",
+)
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(_API_THREAD_POOL)
+    yield
+    _API_THREAD_POOL.shutdown(wait=False, cancel_futures=True)
+
+
+app = FastAPI(title="Aegis Terminal", version="0.4.0", lifespan=_app_lifespan)
 
 # Allow Vite dev server (and production static hosting) to call the API
 app.add_middleware(
@@ -150,18 +167,55 @@ def _persist_job(job_id: str) -> None:
         print(f"[BACKTEST JOB] Persist failed for {job_id}: {exc}")
 
 
+_kite_singleton: Dict[str, Any] = {"client": None, "token": "", "api_key": ""}
+_kite_status_cache: Dict[str, Any] = {"payload": None, "ts": 0.0, "token_key": ""}
+KITE_STATUS_CACHE_SEC = max(15.0, float(os.getenv("KITE_STATUS_CACHE_SEC", "45")))
+
+
+def _reset_kite_singleton() -> None:
+    _kite_singleton.update(client=None, token="", api_key="")
+
+
+def invalidate_kite_dashboard_caches() -> None:
+    """Call after auto-login saves a new access token."""
+    _reset_kite_singleton()
+    _kite_status_cache.update(payload=None, ts=0.0, token_key="")
+    _token_valid_cache["ts"] = 0.0
+
+
 def _get_kite_client():
-    """Return authenticated KiteConnect or None (never raises)."""
+    """Return cached authenticated KiteConnect — one client per access token."""
     try:
         from dotenv import load_dotenv
-        load_dotenv()
-        api_key = os.getenv("KITE_API_KEY")
-        access_token = os.getenv("KITE_ACCESS_TOKEN")
+        load_dotenv(override=True)
+        api_key = os.getenv("KITE_API_KEY", "") or ""
+        access_token = os.getenv("KITE_ACCESS_TOKEN", "") or ""
         if not api_key or not access_token:
+            _reset_kite_singleton()
             return None
+        if (
+            _kite_singleton.get("client") is not None
+            and _kite_singleton.get("token") == access_token
+            and _kite_singleton.get("api_key") == api_key
+        ):
+            return _kite_singleton["client"]
         kite = KiteConnect(api_key=api_key)
         kite.set_access_token(access_token)
+        _kite_singleton.update(client=kite, token=access_token, api_key=api_key)
         return kite
+    except Exception:
+        return None
+
+
+def _get_engine_ws_feed():
+    """Return the trading engine WebSocket feed when run.py shares the process."""
+    try:
+        from app.data_feed import get_active_ws_feed
+
+        feed = get_active_ws_feed()
+        if feed is not None and hasattr(feed, "is_connected") and feed.is_connected():
+            return feed
+        return feed if feed is not None else None
     except Exception:
         return None
 
@@ -172,15 +226,12 @@ def _safe_kite_call(callable_fn, operation_name: str = "kite_api"):
     Always returns structured result + explicit error_code. Never lets the GUI blow up.
     """
     try:
-        from dotenv import load_dotenv
-        load_dotenv()
-        api_key = os.getenv("KITE_API_KEY")
-        access_token = os.getenv("KITE_ACCESS_TOKEN")
-        if not api_key or not access_token:
-            return {"error": "Missing KITE_API_KEY or KITE_ACCESS_TOKEN in environment", "error_code": "KITE_CREDENTIALS_MISSING"}
-
-        kite = KiteConnect(api_key=api_key)
-        kite.set_access_token(access_token)
+        kite = _get_kite_client()
+        if not kite:
+            return {
+                "error": "Missing KITE_API_KEY or KITE_ACCESS_TOKEN in environment",
+                "error_code": "KITE_CREDENTIALS_MISSING",
+            }
         result = callable_fn(kite)
         return {"data": result, "error": None, "error_code": None}
     except Exception as e:
@@ -200,7 +251,7 @@ def _safe_kite_call(callable_fn, operation_name: str = "kite_api"):
 async def dashboard(request: Request):
     return templates.TemplateResponse("index.html", {
         "request": request,
-        "title": "NIFTY FUTURES ALGO — TERMINAL"
+        "title": "AEGIS — TERMINAL"
     })
 
 def _clamp_limit(limit: int, default: int = 50, max_limit: int = 500) -> int:
@@ -271,6 +322,58 @@ def _build_posture_snapshot(multi_risk_manager, live_snapshots_data: dict) -> di
         },
         "per_symbol": per_symbol,
     }
+
+
+_fo_mood_cache: Dict[str, Any] = {"payload": None, "ts": 0.0}
+FO_MOOD_CACHE_SEC = 30.0
+FO_MOOD_CACHE_CLOSED_SEC = 120.0
+SSE_INTERVAL_SEC = max(2.0, float(os.getenv("SSE_INTERVAL_SEC", "5")))
+_sse_payload_cache: Dict[str, Any] = {"payload": None, "ts": 0.0}
+SSE_PAYLOAD_CACHE_SEC = max(1.0, float(os.getenv("SSE_PAYLOAD_CACHE_SEC", "2.5")))
+
+
+def _fo_mood_cache_ttl() -> float:
+    try:
+        market = get_market_status()
+        if not market.get("is_market_open"):
+            return FO_MOOD_CACHE_CLOSED_SEC
+    except Exception:
+        pass
+    return FO_MOOD_CACHE_SEC
+
+
+def _get_fo_mood_cached(live_snapshots_data: dict) -> dict:
+    """Throttle expensive fo_mood computation — REST /api/status uses full build; SSE uses cache."""
+    now = time.time()
+    cached = _fo_mood_cache.get("payload")
+    if cached and now - float(_fo_mood_cache.get("ts") or 0) < _fo_mood_cache_ttl():
+        return cached
+
+    fo_guards: dict = {}
+    posture_snapshot: dict = {}
+    state_value = ""
+    trading_allowed = True
+    try:
+        if multi_risk_manager:
+            from app.fo_guard_status import build_portfolio_guard_snapshot
+            fo_guards = build_portfolio_guard_snapshot(multi_risk_manager)
+            posture_snapshot = _build_posture_snapshot(multi_risk_manager, live_snapshots_data or {})
+        if state_machine:
+            state_value = state_machine.get_state().value
+            trading_allowed = state_machine.is_trading_allowed()
+    except Exception:
+        pass
+
+    mood = _build_fo_mood_snapshot(
+        live_snapshots_data or {},
+        fo_guards,
+        posture_snapshot,
+        state_value=state_value,
+        trading_allowed=trading_allowed,
+    )
+    _fo_mood_cache["payload"] = mood
+    _fo_mood_cache["ts"] = now
+    return mood
 
 
 def _build_fo_mood_snapshot(
@@ -344,12 +447,247 @@ def _build_fo_mood_snapshot(
         return {"available": False, "error": str(exc), "tape_mood": 0, "tradeability": 0}
 
 
-def _build_status_payload(record_equity: bool = False) -> dict:
-    """Build status JSON. Equity history is appended only when record_equity=True."""
-    if not risk_gatekeeper or not state_machine:
+def _engine_ready() -> bool:
+    return bool(risk_gatekeeper and state_machine)
+
+
+_token_valid_cache: Dict[str, Any] = {"valid": False, "ts": 0.0}
+TOKEN_VALID_CACHE_SEC = 60.0
+
+
+def _cached_token_valid(*, network: bool = True) -> bool:
+    """Avoid kite.profile() on hot paths — cache for 60s; quick bootstrap skips network."""
+    now = time.time()
+    if now - float(_token_valid_cache.get("ts") or 0) < TOKEN_VALID_CACHE_SEC:
+        return bool(_token_valid_cache.get("valid"))
+    if not network:
+        return bool(os.getenv("KITE_ACCESS_TOKEN"))
+    valid = False
+    try:
+        from app.kite_auth import validate_access_token
+        valid, _, _ = validate_access_token()
+    except Exception:
+        valid = bool(os.getenv("KITE_ACCESS_TOKEN"))
+    _token_valid_cache["valid"] = valid
+    _token_valid_cache["ts"] = now
+    return valid
+
+
+def _options_mtm_from_legs(options_legs: dict) -> dict:
+    """Fast MTM from in-memory leg snapshots — no Kite REST."""
+    summary = options_legs.get("summary") or {}
+    legs = int(summary.get("legs") or 0)
+    if legs <= 0:
+        return {"available": False, "mtm_net": 0.0, "mtm_gross": 0.0, "legs": 0}
+    return {
+        "available": True,
+        "mtm_net": float(summary.get("mtm_net") or 0),
+        "mtm_gross": float(summary.get("mtm_gross") or 0),
+        "legs": legs,
+    }
+
+
+def _default_options_algo_payload() -> dict:
+    return {
+        "available": False,
+        "enabled": {
+            "options_trading": False,
+            "config_trading_enabled": False,
+            "env_trading_enabled": False,
+            "futures_trading": False,
+        },
+        "structures_today": 0,
+        "open_structures": [],
+        "open_count": 0,
+        "last_cycle_result": None,
+        "last_cycle_at": None,
+        "regime_gates": {"allowed": False, "reasons": [], "gates": {}},
+    }
+
+
+_RECENT_EXECUTION_EVENT_TYPES = frozenset({
+    "signal.accepted",
+    "signal.rejected",
+    "order.placed",
+    "order.exit",
+    "options.structure.open",
+    "options.structure.close",
+    "options.cycle.skip",
+    "options.cycle.fail",
+    "options.eod.flatten",
+})
+
+_TRADES_API_EVENT_TYPES = _RECENT_EXECUTION_EVENT_TYPES | frozenset({
+    "order.dry_run",
+    "trade.closed",
+    "session.start",
+})
+
+
+def _today_ist() -> str:
+    from app.market_calendar import now_ist
+    return now_ist().strftime("%Y-%m-%d")
+
+
+def _ledger_events_today(
+    limit: int,
+    *,
+    event_types: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    from app.trade_ledger import trade_ledger
+    return trade_ledger.read_events_today(limit=limit, event_types=event_types)
+
+
+def _format_options_reason(payload: Dict[str, Any]) -> Optional[str]:
+    reason = payload.get("reason")
+    details = payload.get("details")
+    if isinstance(details, list):
+        detail_text = "; ".join(str(d) for d in details)
+        if reason and detail_text:
+            return f"{reason}: {detail_text}"
+        return detail_text or (str(reason) if reason else None)
+    if reason:
+        sid = payload.get("structure_id")
+        if sid:
+            return f"{reason} ({sid})"
+        return str(reason)
+    message = payload.get("message")
+    if message:
+        action = payload.get("action")
+        if action:
+            return f"{action}: {message}"
+        return str(message)
+    return payload.get("structure_id")
+
+
+def _map_ledger_event_to_recent_exec(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    et = event.get("event_type", "")
+    if et not in _RECENT_EXECUTION_EVENT_TYPES:
+        return None
+    p = event.get("payload", {}) or {}
+    base: Dict[str, Any] = {"ts": event.get("ts"), "type": et}
+    if et.startswith("options."):
+        side = "SKIP"
+        if et == "options.cycle.fail":
+            side = "FAIL"
+        elif "open" in et:
+            side = "OPEN"
+        elif "close" in et or "flatten" in et:
+            side = "CLOSE"
+        base.update({
+            "side": side,
+            "symbol": p.get("underlying") or p.get("index") or p.get("symbol"),
+            "price": p.get("credit"),
+            "reason": _format_options_reason(p),
+            "qty": p.get("legs"),
+            "structure_id": p.get("structure_id"),
+        })
+        return base
+    base.update({
+        "side": p.get("side"),
+        "symbol": p.get("index") or p.get("symbol"),
+        "price": p.get("price"),
+        "reason": p.get("reason") or p.get("filter") or p.get("message"),
+        "regime": p.get("regime"),
+        "qty": p.get("quantity"),
+        "quantity": p.get("quantity"),
+    })
+    return base
+
+
+def _build_recent_execution_from_ledger(limit: int = 8, *, tail_n: Optional[int] = None) -> List[Dict[str, Any]]:
+    recent_exec: List[Dict[str, Any]] = []
+    try:
+        events = _ledger_events_today(
+            tail_n or max(limit * 3, 24),
+            event_types=list(_RECENT_EXECUTION_EVENT_TYPES),
+        )
+        for e in events:
+            mapped = _map_ledger_event_to_recent_exec(e)
+            if mapped:
+                recent_exec.append(mapped)
+            if len(recent_exec) >= limit:
+                break
+    except Exception:
+        pass
+    return recent_exec
+
+
+def _last_action_from_ledger_event(event: Dict[str, Any]) -> Optional[str]:
+    et = event.get("event_type", "")
+    p = event.get("payload", {}) or {}
+    if et == "signal.accepted":
+        return f"Signal Accepted: {p.get('side')} @ {p.get('price')}"
+    if et == "order.placed":
+        return f"Order Placed: {p.get('side')} {p.get('quantity')}"
+    if et == "order.exit":
+        return "Exit Order Submitted"
+    if et == "signal.rejected":
+        return f"Signal Rejected: {p.get('reason', 'unknown')}"
+    if et == "options.structure.open":
+        credit = float(p.get("credit") or 0)
+        return f"Options IC opened on {p.get('underlying', '?')} (credit ₹{credit:,.0f})"
+    if et == "options.structure.close":
+        return f"Options IC closed: {p.get('reason', 'manual')}"
+    if et == "options.cycle.skip":
+        reason = _format_options_reason(p) or "unknown"
+        return f"Options cycle skipped: {reason}"
+    if et == "options.cycle.fail":
+        action = p.get("action", "cycle")
+        msg = p.get("message") or "unknown"
+        return f"Options cycle failed ({action}): {msg}"
+    if et == "options.eod.flatten":
+        return "Options EOD flatten"
+    return None
+
+
+def _get_options_algo_status(*, fast: bool = False, include_market_context: bool = False) -> dict:
+    """Automated iron-condor structures — alongside manual options_legs sheet."""
+    try:
+        from app.options_strategy_runner import get_options_algo_status_payload
+
+        kite = None if fast else _get_kite_client()
+        market_context = None
+        if include_market_context and not fast:
+            try:
+                from app.market_context import load_market_context
+                market_context = load_market_context()
+            except Exception:
+                pass
+        ws_feed = None if fast else _get_engine_ws_feed()
+        return get_options_algo_status_payload(
+            fast=fast,
+            kite=kite,
+            ws_feed=ws_feed,
+            market_context=market_context,
+        )
+    except Exception:
+        return _default_options_algo_payload()
+
+
+def _build_status_quick_payload() -> dict:
+    """Lightweight status for dashboard bootstrap — no NSE macro or Kite profile calls."""
+    if not _engine_ready():
         return {
             "error": "Trading engine not loaded",
-            "timestamp": datetime.now().isoformat()
+            "engine_ready": False,
+            "timestamp": datetime.now().isoformat(),
+            "mode": "PAPER",
+            "state": "OFFLINE",
+            "market": get_market_status(),
+            "token_valid": False,
+            "daily_pnl": 0,
+            "combined_daily_pnl": 0,
+            "daily_loss": 0,
+            "current_equity": 0,
+            "trades_today": 0,
+            "max_drawdown": 0,
+            "capital": 0,
+            "equity_history": [],
+            "last_action": "Engine not loaded — run python run.py",
+            "recent_execution": [],
+            "per_symbol_status": {},
+            "live_snapshots": {},
         }
 
     multi_risk_manager = None
@@ -364,12 +702,127 @@ def _build_status_payload(record_equity: bool = False) -> dict:
     effective_trades = multi_risk_manager.trades_today if multi_risk_manager else risk_gatekeeper.trades_today
     current_equity = risk_gatekeeper.capital + effective_daily_pnl
 
-    token_valid = False
+    live_snapshots_data = {}
     try:
-        from app.kite_auth import validate_access_token
-        token_valid, _, _ = validate_access_token()
+        from app import live_snapshots
+        live_snapshots_data = live_snapshots.get_all_snapshots()
     except Exception:
-        token_valid = bool(os.getenv("KITE_ACCESS_TOKEN"))
+        pass
+
+    per_symbol_rich_status = {}
+    if multi_risk_manager:
+        per_symbol_rich_status = multi_risk_manager.get_per_symbol_status()
+
+    safe_cards = {}
+    for sym in ["NIFTY", "BANKNIFTY", "SENSEX"]:
+        safe_cards[sym] = per_symbol_rich_status.get(sym, {
+            "position": 0,
+            "avg_price": 0,
+            "daily_pnl": 0.0,
+            "daily_trades": 0,
+            "daily_loss": 0.0,
+        })
+        snap = live_snapshots_data.get(sym, {}) or {}
+        if snap.get("unrealized_pnl") is not None and abs(snap.get("unrealized_pnl", 0)) > 0.5:
+            safe_cards[sym]["live_unrealized_pnl"] = round(snap["unrealized_pnl"], 2)
+
+    options_mtm = {"available": False, "mtm_net": 0.0, "mtm_gross": 0.0, "legs": 0}
+    options_net = 0.0
+
+    trade_budget = {}
+    try:
+        if multi_risk_manager and hasattr(multi_risk_manager, "get_budget_summary"):
+            trade_budget = multi_risk_manager.get_budget_summary()
+    except Exception:
+        pass
+
+    recent_exec = _build_recent_execution_from_ledger(8)
+    last_action = "No recent activity"
+    try:
+        events = _ledger_events_today(10, event_types=list(_RECENT_EXECUTION_EVENT_TYPES))
+        if events:
+            action = _last_action_from_ledger_event(events[0])
+            if action:
+                last_action = action
+    except Exception:
+        pass
+
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "engine_ready": True,
+        "mode": "PAPER" if risk_gatekeeper.config.force_dry_run else "LIVE",
+        "state": state_machine.get_state().value,
+        "capital": risk_gatekeeper.capital,
+        "daily_pnl": round(effective_daily_pnl, 2),
+        "options_mtm": options_mtm,
+        "combined_daily_pnl": round(effective_daily_pnl + options_net, 2),
+        "daily_loss": round(effective_daily_loss, 2),
+        "current_equity": round(current_equity + options_net, 2),
+        "trades_today": effective_trades,
+        "max_drawdown": round(
+            (multi_risk_manager._current_drawdown_pct() * 100) if multi_risk_manager
+            else risk_gatekeeper._current_drawdown_pct() * 100,
+            2,
+        ),
+        "token_valid": _cached_token_valid(network=False),
+        "equity_history": EQUITY_HISTORY[-100:],
+        "last_action": last_action,
+        "recent_execution": recent_exec,
+        "market": get_market_status(),
+        "per_symbol_status": safe_cards,
+        "live_snapshots": live_snapshots_data,
+        "trade_budget": trade_budget,
+        "fo_mood": _fo_mood_cache.get("payload"),
+    }
+
+
+def _build_status_payload(record_equity: bool = False) -> dict:
+    """Build status JSON. Equity history is appended only when record_equity=True."""
+    if not _engine_ready():
+        options_legs = {"available": False, "legs": {}, "summary": {}}
+        try:
+            from app.options_legs_engine import options_legs_engine
+            options_legs = options_legs_engine.get_status_payload()
+        except Exception:
+            pass
+        options_algo = _get_options_algo_status(fast=False, include_market_context=True)
+        return {
+            "error": "Trading engine not loaded",
+            "engine_ready": False,
+            "timestamp": datetime.now().isoformat(),
+            "mode": "PAPER",
+            "state": "OFFLINE",
+            "market": get_market_status(),
+            "options_legs": options_legs,
+            "options_algo": options_algo,
+            "token_valid": False,
+            "daily_pnl": 0,
+            "combined_daily_pnl": 0,
+            "daily_loss": 0,
+            "current_equity": 0,
+            "trades_today": 0,
+            "max_drawdown": 0,
+            "capital": 0,
+            "equity_history": [],
+            "last_action": "Engine not loaded — run python run.py",
+            "recent_execution": [],
+            "per_symbol_status": {},
+            "live_snapshots": {},
+        }
+
+    multi_risk_manager = None
+    try:
+        from app.multi_symbol_risk import multi_risk_manager as _mrm
+        multi_risk_manager = _mrm
+    except Exception:
+        pass
+
+    effective_daily_pnl = multi_risk_manager.daily_pnl if multi_risk_manager else risk_gatekeeper.daily_pnl
+    effective_daily_loss = multi_risk_manager.daily_loss if multi_risk_manager else risk_gatekeeper.daily_loss
+    effective_trades = multi_risk_manager.trades_today if multi_risk_manager else risk_gatekeeper.trades_today
+    current_equity = risk_gatekeeper.capital + effective_daily_pnl
+
+    token_valid = _cached_token_valid()
 
     if record_equity:
         now_ts = time.time()
@@ -384,21 +837,13 @@ def _build_status_payload(record_equity: bool = False) -> dict:
     last_ltp = None
     last_regime = None
     try:
-        from app.trade_ledger import trade_ledger
-        recent = trade_ledger.tail(10)
+        recent = _ledger_events_today(10, event_types=list(_RECENT_EXECUTION_EVENT_TYPES))
         if recent:
-            latest = recent[-1]
-            etype = latest.get("event_type", "")
-            payload = latest.get("payload", {})
-            if etype == "signal.accepted":
-                last_action = f"Signal Accepted: {payload.get('side')} @ {payload.get('price')}"
-            elif etype == "order.placed":
-                last_action = f"Order Placed: {payload.get('side')} {payload.get('quantity')}"
-            elif etype == "order.exit":
-                last_action = "Exit Order Submitted"
-            elif etype == "signal.rejected":
-                reason = payload.get("reason", "unknown")
-                last_action = f"Signal Rejected: {reason}"
+            latest = recent[0]
+            payload = latest.get("payload", {}) or {}
+            action = _last_action_from_ledger_event(latest)
+            if action:
+                last_action = action
             # Capture any symbol/ltp/regime we logged
             if "symbol" in payload:
                 active_symbol = payload.get("symbol")
@@ -427,9 +872,8 @@ def _build_status_payload(record_equity: bool = False) -> dict:
     # Fallback to ledger if no live snapshots yet
     last_signals = {}
     try:
-        from app.trade_ledger import trade_ledger
-        recent = trade_ledger.tail(30)
-        for event in reversed(recent):
+        recent = _ledger_events_today(30, event_types=["signal.accepted"])
+        for event in recent:
             if event.get("event_type") == "signal.accepted":
                 raw_sym = event.get("payload", {}).get("symbol") or "NIFTY"
                 # Normalize to short index name for dashboard cards (handles NIFTY26JUNFUT -> NIFTY)
@@ -470,27 +914,8 @@ def _build_status_payload(record_equity: bool = False) -> dict:
                     "avg_price": round(p.avg_price, 2),
                 })
 
-    # Build a tiny recent execution log (accepted + rejected) for the live GUI
-    recent_exec = []
-    try:
-        from app.trade_ledger import trade_ledger
-        events = trade_ledger.tail(15)
-        for e in reversed(events[-8:]):
-            et = e.get("event_type", "")
-            p = e.get("payload", {})
-            if et in ("signal.accepted", "signal.rejected", "order.placed", "order.exit"):
-                recent_exec.append({
-                    "ts": e.get("ts"),
-                    "type": et,
-                    "side": p.get("side"),
-                    "symbol": p.get("index") or p.get("symbol"),
-                    "price": p.get("price"),
-                    "reason": p.get("reason") or p.get("filter") or p.get("message"),
-                    "regime": p.get("regime"),
-                    "qty": p.get("quantity"),
-                })
-    except:
-        pass
+    # Build a tiny recent execution log (futures + options) for the live GUI
+    recent_exec = _build_recent_execution_from_ledger(8, tail_n=15)
 
     # Build a safe default for the three cards even on first run or when data is sparse
     safe_cards = {}
@@ -535,16 +960,20 @@ def _build_status_payload(record_equity: bool = False) -> dict:
     except Exception:
         pass
 
-    fo_mood = _build_fo_mood_snapshot(
-        live_snapshots_data or {},
-        fo_guards,
-        posture_snapshot,
-        state_value=state_machine.get_state().value,
-        trading_allowed=state_machine.is_trading_allowed(),
-    )
+    fo_mood = _get_fo_mood_cached(live_snapshots_data or {})
+
+    options_legs = {"available": False, "legs": {}, "summary": {}}
+    try:
+        from app.options_legs_engine import options_legs_engine
+        options_legs = options_legs_engine.get_status_payload(fast=True)
+    except Exception:
+        pass
+
+    options_algo = _get_options_algo_status(fast=True, include_market_context=False)
 
     return {
         "timestamp": datetime.now().isoformat(),
+        "engine_ready": True,
         "mode": "PAPER" if risk_gatekeeper.config.force_dry_run else "LIVE",
         "state": state_machine.get_state().value,
         "capital": risk_gatekeeper.capital,
@@ -583,14 +1012,22 @@ def _build_status_payload(record_equity: bool = False) -> dict:
         "fo_guards": fo_guards,
         "posture_snapshot": posture_snapshot,
         "fo_mood": fo_mood,
+        "options_legs": options_legs,
+        "options_algo": options_algo,
     }
 
 
 # === Real-time Status Endpoint (JSON) ===
+@app.get("/api/status/quick")
+async def get_status_quick():
+    """Fast bootstrap status — no blocking NSE/Kite network on the event loop."""
+    return await asyncio.to_thread(_build_status_quick_payload)
+
+
 @app.get("/api/status")
 async def get_status():
     """Current system state + equity history + last action for charting"""
-    return _build_status_payload(record_equity=True)
+    return await asyncio.to_thread(_build_status_payload, True)
 
 
 # === Dedicated Market Status (used by both terminals for the persistent banner) ===
@@ -598,10 +1035,15 @@ async def get_status():
 async def fo_market_mood():
     """F&O tape mood vs tradeability — 30s cached composite score."""
     try:
-        status = _build_status_payload(record_equity=False)
-        if status.get("error"):
-            return {"available": False, "error": status["error"], "tape_mood": 0, "tradeability": 0}
-        mood = status.get("fo_mood") or {}
+        if not _engine_ready():
+            return {"available": False, "error": "Trading engine not loaded", "tape_mood": 0, "tradeability": 0}
+        live_snapshots_data = {}
+        try:
+            from app import live_snapshots
+            live_snapshots_data = live_snapshots.get_all_snapshots()
+        except Exception:
+            pass
+        mood = await asyncio.to_thread(_get_fo_mood_cached, live_snapshots_data)
         if not mood.get("available", True) and mood.get("error"):
             return mood
         return mood
@@ -627,153 +1069,184 @@ async def market_status():
         }
 
 
+_sse_equity_buffer: List[Dict[str, Any]] = []
+
+
+def _build_sse_payload() -> dict:
+    """Sync SSE snapshot — must stay fast; never call Kite/NSE here."""
+    data = {
+        "timestamp": datetime.now().isoformat(),
+        "engine_ready": _engine_ready(),
+        "per_symbol_status": {},
+        "live_snapshots": {},
+        "last_action": "No recent activity",
+        "recent_execution": [],
+        "last_proposed_signals": {},
+        "options_legs": {"available": False, "legs": {}, "summary": {}},
+        "options_algo": _default_options_algo_payload(),
+    }
+    try:
+        from app.multi_symbol_risk import multi_risk_manager
+        data["per_symbol_status"] = multi_risk_manager.get_per_symbol_status()
+    except Exception:
+        pass
+    try:
+        from app import live_snapshots
+        data["live_snapshots"] = live_snapshots.get_all_snapshots()
+    except Exception:
+        pass
+
+    try:
+        snaps = data.get("live_snapshots", {})
+        for sym in list(data.get("per_symbol_status", {}).keys()):
+            s = snaps.get(sym, {})
+            if s.get("unrealized_pnl") is not None and abs(s.get("unrealized_pnl", 0)) > 0.5:
+                data["per_symbol_status"][sym]["live_unrealized_pnl"] = round(s["unrealized_pnl"], 2)
+    except Exception:
+        pass
+
+    try:
+        snaps = data.get("live_snapshots", {})
+        any_snap = next(iter(snaps.values()), {}) if snaps else {}
+        from app.risk_gatekeeper import risk_gatekeeper
+        current_equity = risk_gatekeeper.capital + risk_gatekeeper.daily_pnl if risk_gatekeeper else 1_000_000
+        global _sse_equity_buffer
+        _sse_equity_buffer.append({"ts": time.time(), "equity": current_equity})
+        if len(_sse_equity_buffer) > 40:
+            _sse_equity_buffer.pop(0)
+        data["global_params"] = {
+            "vol_regime": (any_snap.get("regime") or {}).get("volatility", "normal"),
+            "risk_mult": 0.75,
+            "equity_recent": list(_sse_equity_buffer),
+        }
+    except Exception:
+        pass
+
+    try:
+        recent = _ledger_events_today(10, event_types=list(_RECENT_EXECUTION_EVENT_TYPES))
+        if recent:
+            action = _last_action_from_ledger_event(recent[0])
+            if action:
+                data["last_action"] = action
+        data["recent_execution"] = _build_recent_execution_from_ledger(8, tail_n=10)
+        if data["recent_execution"] and not data.get("last_action", "").startswith(("Signal", "Options")):
+            latest = data["recent_execution"][0]
+            data["last_action"] = latest.get("reason") or data["last_action"]
+        last_sig = {}
+        for e in recent:
+            if e.get("event_type") == "signal.accepted":
+                raw = e.get("payload", {}).get("symbol") or "NIFTY"
+                sym = "NIFTY" if "NIFTY" in str(raw).upper() and "BANK" not in str(raw).upper() else (
+                    "BANKNIFTY" if "BANKNIFTY" in str(raw).upper() else (
+                        "SENSEX" if "SENSEX" in str(raw).upper() else "NIFTY"
+                    )
+                )
+                if sym not in last_sig:
+                    pp = e.get("payload", {})
+                    last_sig[sym] = {
+                        "side": pp.get("side"), "price": pp.get("price"), "atr": pp.get("atr"),
+                        "regime": pp.get("regime"), "proposed": pp.get("side"), "ltp": pp.get("price"), "ts": e.get("ts"),
+                    }
+        data["last_proposed_signals"] = last_sig
+    except Exception:
+        pass
+
+    cached_mood = _fo_mood_cache.get("payload")
+    if cached_mood and time.time() - float(_fo_mood_cache.get("ts") or 0) < _fo_mood_cache_ttl():
+        data["fo_mood"] = cached_mood
+
+    try:
+        from app.options_legs_engine import options_legs_engine
+        data["options_legs"] = options_legs_engine.get_status_payload(fast=True)
+    except Exception:
+        pass
+
+    return data
+
+
+def _build_sse_payload_cached() -> dict:
+    """Reuse snapshot between SSE ticks — ledger + risk reads are not free."""
+    now = time.time()
+    cached = _sse_payload_cache.get("payload")
+    if cached is not None and now - float(_sse_payload_cache.get("ts") or 0) < SSE_PAYLOAD_CACHE_SEC:
+        payload = dict(cached)
+        payload["timestamp"] = datetime.now().isoformat()
+        return payload
+    payload = _build_sse_payload()
+    _sse_payload_cache["payload"] = payload
+    _sse_payload_cache["ts"] = now
+    return payload
+
+
 # === Real-time SSE endpoint for the 3 index cards (WebSocket-style, much better than polling) ===
 @app.get("/api/status/stream")
-async def status_stream():
+async def status_stream(request: Request):
     """
     Server-Sent Events (SSE) for smooth real-time updates of the 3 index cards.
     This is the recommended "WebSocket-style" approach for this architecture.
     Frontend uses EventSource.
     """
     async def event_generator():
+        # Flush headers immediately so browsers mark EventSource open (don't wait for slow snapshot).
+        yield ": connected\n\n"
+        heartbeat_sec = max(8.0, min(15.0, SSE_INTERVAL_SEC))
         while True:
+            if await request.is_disconnected():
+                break
             try:
-                data = {
-                    "timestamp": datetime.now().isoformat(),
-                    "per_symbol_status": {},
-                    "live_snapshots": {},
-                    "last_action": "No recent activity",
-                    "recent_execution": [],
-                    "last_proposed_signals": {},
-                }
-                try:
-                    from app.multi_symbol_risk import multi_risk_manager
-                    data["per_symbol_status"] = multi_risk_manager.get_per_symbol_status()
-                except:
-                    pass
-                try:
-                    from app import live_snapshots
-                    data["live_snapshots"] = live_snapshots.get_all_snapshots()
-                except:
-                    pass
-
-                # Enrich per-symbol status with live unrealized from snapshots for open positions in the GUI cards
-                try:
-                    snaps = data.get("live_snapshots", {})
-                    for sym in list(data.get("per_symbol_status", {}).keys()):
-                        s = snaps.get(sym, {})
-                        if s.get("unrealized_pnl") is not None and abs(s.get("unrealized_pnl", 0)) > 0.5:
-                            data["per_symbol_status"][sym]["live_unrealized_pnl"] = round(s["unrealized_pnl"], 2)
-                except:
-                    pass
-
-                # Enrich the primary live stream with data needed to keep global cards (Equity + Strategy Params) feeling alive
-                try:
-                    snaps = data.get("live_snapshots", {})
-                    any_snap = next(iter(snaps.values()), {}) if snaps else {}
-
-                    # Pull a tiny bit of equity history for the chart (last 30 points is lightweight)
-                    from app.risk_gatekeeper import risk_gatekeeper
-                    current_equity = risk_gatekeeper.capital + risk_gatekeeper.daily_pnl if risk_gatekeeper else 1000000
-
-                    # Simple rolling equity (we keep a small in-memory buffer in the stream for smoothness)
-                    if not hasattr(status_stream, "_equity_buffer"):
-                        status_stream._equity_buffer = []
-                    status_stream._equity_buffer.append({"ts": time.time(), "equity": current_equity})
-                    if len(status_stream._equity_buffer) > 40:
-                        status_stream._equity_buffer.pop(0)
-
-                    data["global_params"] = {
-                        "vol_regime": (any_snap.get("regime") or {}).get("volatility", "normal"),
-                        "risk_mult": 0.75,
-                        "equity_recent": list(status_stream._equity_buffer),
-                    }
-                except:
-                    pass
-
-                # Lightweight last action + recent for live diagnostics (prevents stale "Waiting for first decision")
-                try:
-                    from app.trade_ledger import trade_ledger
-                    recent = trade_ledger.tail(10)
-                    if recent:
-                        latest = recent[-1]
-                        etype = latest.get("event_type", "")
-                        payload = latest.get("payload", {})
-                        if etype == "signal.accepted":
-                            data["last_action"] = f"Signal Accepted: {payload.get('side')} @ {payload.get('price')}"
-                        elif etype == "order.placed":
-                            data["last_action"] = f"Order Placed: {payload.get('side')} {payload.get('quantity')}"
-                        elif etype == "order.exit":
-                            data["last_action"] = "Exit Order Submitted"
-                        elif etype == "signal.rejected":
-                            data["last_action"] = f"Signal Rejected: {payload.get('reason', 'unknown')}"
-                    # recent exec for diagnostics feed + trades table (normalized fields)
-                    for e in reversed(recent[-8:]) if recent else []:
-                        et = e.get("event_type", "")
-                        p = e.get("payload", {})
-                        if et in ("signal.accepted", "signal.rejected", "order.placed", "order.exit"):
-                            data["recent_execution"].append({
-                                "ts": e.get("ts"),
-                                "type": et,
-                                "side": p.get("side"),
-                                "symbol": p.get("index") or p.get("symbol"),
-                                "price": p.get("price"),
-                                "reason": p.get("message") or p.get("reason") or p.get("filter"),
-                                "regime": p.get("regime"),
-                                "qty": p.get("quantity"),
-                                "quantity": p.get("quantity"),
-                            })
-                    # Gate summaries live on snapshots — avoid re-injecting into recent_execution every tick
-                    if data["recent_execution"] and not data.get("last_action", "").startswith("Signal"):
-                        latest = data["recent_execution"][-1]
-                        data["last_action"] = latest.get("reason") or data["last_action"]
-                    # last proposed per symbol (normalized)
-                    last_sig = {}
-                    for e in reversed(recent) if recent else []:
-                        if e.get("event_type") == "signal.accepted":
-                            raw = e.get("payload", {}).get("symbol") or "NIFTY"
-                            sym = "NIFTY" if "NIFTY" in str(raw).upper() and "BANK" not in str(raw).upper() else ("BANKNIFTY" if "BANKNIFTY" in str(raw).upper() else ("SENSEX" if "SENSEX" in str(raw).upper() else "NIFTY"))
-                            if sym not in last_sig:
-                                pp = e.get("payload", {})
-                                last_sig[sym] = {"side": pp.get("side"), "price": pp.get("price"), "atr": pp.get("atr"), "regime": pp.get("regime"), "proposed": pp.get("side"), "ltp": pp.get("price"), "ts": e.get("ts")}
-                    data["last_proposed_signals"] = last_sig
-                except:
-                    pass
-
+                data = await asyncio.to_thread(_build_sse_payload_cached)
                 yield f"data: {json.dumps(data)}\n\n"
-                await asyncio.sleep(1.2)  # Smooth ~0.8 updates per second
+                elapsed = 0.0
+                while elapsed < SSE_INTERVAL_SEC:
+                    if await request.is_disconnected():
+                        break
+                    wait = min(heartbeat_sec, SSE_INTERVAL_SEC - elapsed)
+                    await asyncio.sleep(wait)
+                    elapsed += wait
+                    if elapsed < SSE_INTERVAL_SEC:
+                        yield ": heartbeat\n\n"
             except asyncio.CancelledError:
                 break
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                break
             except Exception:
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # === Recent Trades (from improved Trade Ledger) ===
+def _get_trades_payload(limit: int, trade_date: str) -> dict:
+    from app.trade_ledger import trade_ledger
+    events = trade_ledger.read_events(
+        limit=limit * 2,
+        date_ist=trade_date,
+        event_types=list(_TRADES_API_EVENT_TYPES),
+    )
+    return {
+        "trades": events[:limit],
+        "date": trade_date,
+        "total_events": trade_ledger.event_count(),
+    }
+
+
 @app.get("/api/trades")
-async def get_trades(limit: int = 50):
-    """Read from the improved trade ledger (much richer than raw audit)"""
+async def get_trades(limit: int = 50, date: Optional[str] = None):
+    """Read from the improved trade ledger — defaults to today IST."""
     limit = _clamp_limit(limit)
+    trade_date = date or _today_ist()
     try:
-        from app.trade_ledger import trade_ledger
-        events = trade_ledger.tail(limit * 2)  # Get more to filter
-
-        # Filter for relevant events (include rejections so the GUI can show why no trades happened)
-        relevant = [
-            e for e in events 
-            if e.get("event_type") in [
-                "signal.accepted", "signal.rejected", "order.placed", "order.exit",
-                "order.dry_run", "trade.closed", "session.start",
-            ]
-        ]
-
-        return {
-            "trades": list(reversed(relevant[-limit:])),
-            "total_events": trade_ledger.event_count(),
-        }
+        return await asyncio.to_thread(_get_trades_payload, limit, trade_date)
     except Exception as e:
-        return {"error": str(e), "trades": [], "total_events": 0}
+        return {"error": str(e), "trades": [], "total_events": 0, "date": trade_date}
 
 
 @app.get("/api/ledger")
@@ -799,9 +1272,7 @@ async def get_ledger(
 
 # === Manual external options sheet (brother's daily signals) ===
 
-@app.get("/api/external-signals")
-async def get_external_signals(date: Optional[str] = None, with_pnl: bool = True):
-    """Load manual CE/PE sheet for a trade date (default: today IST)."""
+def _build_external_signals_response(date: Optional[str], with_pnl: bool) -> dict:
     from app.external_signals import external_signals_store, DISPLAY_NAMES, apply_pnl_to_sheet
     sheet = external_signals_store.get(date)
     if with_pnl:
@@ -816,22 +1287,34 @@ async def get_external_signals(date: Optional[str] = None, with_pnl: bool = True
     return {"sheet": sheet, "display_names": DISPLAY_NAMES}
 
 
+@app.get("/api/external-signals")
+async def get_external_signals(date: Optional[str] = None, with_pnl: bool = True):
+    """Load manual CE/PE sheet for a trade date (default: today IST)."""
+    return await asyncio.to_thread(_build_external_signals_response, date, with_pnl)
+
+
 @app.get("/api/external-signals/dates")
 async def list_external_signal_dates():
     from app.external_signals import external_signals_store
     return {"dates": external_signals_store.list_dates()}
 
 
+def _save_external_signals_sync(body: dict) -> dict:
+    from app.external_signals import external_signals_store
+    from app.options_legs_engine import options_legs_engine
+    sheet = body.get("sheet") or body
+    saved = external_signals_store.save(sheet)
+    options_legs_engine.on_sheet_saved(saved)
+    rows = external_signals_store.journal_for_date(saved["date"])
+    return {"ok": True, "sheet": saved, "journal_rows": rows}
+
+
 @app.post("/api/external-signals")
 async def save_external_signals(request: Request):
     """Save manual options sheet for the given date."""
-    from app.external_signals import external_signals_store
     try:
         body = await request.json()
-        sheet = body.get("sheet") or body
-        saved = external_signals_store.save(sheet)
-        rows = external_signals_store.journal_for_date(saved["date"])
-        return {"ok": True, "sheet": saved, "journal_rows": rows}
+        return await asyncio.to_thread(_save_external_signals_sync, body)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
@@ -866,17 +1349,14 @@ async def delete_external_signals_post(date: str):
     return result
 
 
-@app.get("/api/external-signals/premiums")
-async def external_signals_premiums(date: Optional[str] = None):
-    """Live Kite CE/PE LTP for strikes on the saved sheet (optional cross-check)."""
-    from app.external_signals import external_signals_store, fetch_live_premiums
+def _external_signals_premiums_sync(date: Optional[str]) -> dict:
+    from app.external_signals import external_signals_store, fetch_live_premiums, apply_pnl_to_sheet
     sheet = external_signals_store.get(date)
     try:
         kite = _get_kite_client()
         if kite:
             from app.instruments_manager import instruments_manager
             instruments_manager.bind(kite)
-        from app.external_signals import apply_pnl_to_sheet
         premiums = fetch_live_premiums(sheet)
         enriched = apply_pnl_to_sheet(sheet, premiums)
         return {
@@ -889,26 +1369,38 @@ async def external_signals_premiums(date: Optional[str] = None):
         return {"sheet_date": sheet.get("date"), "premiums": {"available": False, "error": str(exc)}}
 
 
+@app.get("/api/external-signals/premiums")
+async def external_signals_premiums(date: Optional[str] = None):
+    """Live Kite CE/PE LTP for strikes on the saved sheet (optional cross-check)."""
+    return await asyncio.to_thread(_external_signals_premiums_sync, date)
+
+
+def _evaluate_external_signals_sync(date: Optional[str]) -> dict:
+    from app.external_signals import evaluate_and_save
+    from app.options_legs_engine import options_legs_engine
+    kite = _get_kite_client()
+    if kite:
+        from app.instruments_manager import instruments_manager
+        instruments_manager.bind(kite)
+    sheet, premiums, rows = evaluate_and_save(date)
+    options_legs_engine.refresh_from_sheet(sheet, premiums)
+    return {
+        "ok": True,
+        "sheet": sheet,
+        "premiums": premiums,
+        "journal_rows": rows,
+        "pnl_summary": sheet.get("pnl_summary"),
+    }
+
+
 @app.post("/api/external-signals/evaluate")
 async def evaluate_external_signals(date: Optional[str] = None):
     """
     Check live premiums vs entry/target/stop, update journal on the sheet, and save.
     Call during market hours (or anytime for snapshot). History accumulates per saved date.
     """
-    from app.external_signals import evaluate_and_save
     try:
-        kite = _get_kite_client()
-        if kite:
-            from app.instruments_manager import instruments_manager
-            instruments_manager.bind(kite)
-        sheet, premiums, rows = evaluate_and_save(date)
-        return {
-            "ok": True,
-            "sheet": sheet,
-            "premiums": premiums,
-            "journal_rows": rows,
-            "pnl_summary": sheet.get("pnl_summary"),
-        }
+        return await asyncio.to_thread(_evaluate_external_signals_sync, date)
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
@@ -922,23 +1414,67 @@ async def external_signals_journal(limit: int = 90, date: Optional[str] = None):
     return {"rows": rows, "dates": external_signals_store.list_dates(), "filtered_date": date}
 
 
-# === Live Diagnostics Stream (SSE) ===
-@app.get("/api/stream")
-async def status_stream():
-    """Server-Sent Events for real-time updates"""
-    async def event_generator():
-        while True:
-            try:
-                status = _build_status_payload(record_equity=False)
-                yield f"data: {json.dumps(status)}\n\n"
-                await asyncio.sleep(3)  # Update every 3 seconds
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-                await asyncio.sleep(5)
+@app.get("/api/external-signals/comparison")
+async def external_signals_comparison(date: Optional[str] = None):
+    """Sheet vs algo scoreboard — who wins today per index."""
+    from app.sheet_algo_bridge import build_sheet_vs_algo_scoreboard, get_sheet_inputs_for_symbol
+    from app.config_loader import get_external_signals_config
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return await asyncio.to_thread(
+        lambda: {
+            **build_sheet_vs_algo_scoreboard(date),
+            "config": get_external_signals_config(),
+            "inputs": {
+                sym: get_sheet_inputs_for_symbol(sym)
+                for sym in ("NIFTY", "BANKNIFTY", "SENSEX")
+            },
+        }
+    )
+
+
+def _build_options_legs_live_fast() -> dict:
+    """In-memory leg snapshots — warm cache if engine has not ticked yet."""
+    from app.options_legs_engine import options_legs_engine
+    options_legs_engine._ensure_loaded()
+    status = options_legs_engine.get_status_payload(fast=True)
+    if not status.get("available"):
+        status = options_legs_engine.get_status_payload(fast=False)
+    return {
+        "available": status.get("available", False),
+        "date": status.get("date"),
+        "timestamp": datetime.now().isoformat(),
+        "legs": status.get("legs", {}),
+        "summary": status.get("summary", {}),
+        "subscribed_tokens": status.get("subscribed_tokens", 0),
+    }
+
+
+def _build_options_legs_live_full(date: Optional[str]) -> dict:
+    from app.options_legs_engine import options_legs_engine
+    from app.external_signals import external_signals_store
+    sheet = external_signals_store.get(date)
+    try:
+        kite = _get_kite_client()
+        if kite:
+            from app.instruments_manager import instruments_manager
+            instruments_manager.bind(kite)
+    except Exception:
+        pass
+    return options_legs_engine.build_live_response(sheet)
+
+
+@app.get("/api/options-legs/live")
+async def options_legs_live(date: Optional[str] = None, refresh: bool = False):
+    """Live 6-leg options desk snapshot (CE/PE per index)."""
+    if refresh:
+        return await asyncio.to_thread(_build_options_legs_live_full, date)
+    return await asyncio.to_thread(_build_options_legs_live_fast)
+
+
+# === Legacy stream alias (redirect clients to the lightweight SSE path) ===
+@app.get("/api/stream")
+async def legacy_status_stream(request: Request):
+    return await status_stream(request)
 
 # ==================== INTERACTIVE BACKTEST ENDPOINTS ====================
 
@@ -1364,7 +1900,7 @@ async def get_full_learning_report():
 
 @app.get("/backtest", response_class=HTMLResponse)
 async def backtest_page(request: Request):
-    """Interactive backtest + data fetch control panel. Super clean Algo Lab with full learning + Kite integration."""
+    """Interactive backtest + data fetch control panel. Aegis with full learning + Kite integration."""
     return templates.TemplateResponse("backtest.html", {"request": request})
 
 
@@ -1372,7 +1908,7 @@ async def backtest_page(request: Request):
 async def get_data_health(stale_days: int = 5):
     """
     Validate all local market data (parquet caches + JSON runtime files).
-    Powers the Data Health panel in Algo Lab → Presets & Data.
+    Powers the Data Health panel in Aegis → Presets & Data.
     """
     try:
         from backtesting.data_health import scan_data_health
@@ -1651,12 +2187,23 @@ async def get_micro_live_status():
 
 
 @app.get("/api/agent/insights")
-async def get_agent_insights():
-    """Phase 2 agent insights — brief posture, learning multipliers, promotion previews."""
+async def get_agent_insights(refresh: bool = False):
+    """Aegis agent insights — promotion, WFO, proposals, lunar, market context."""
     try:
-        from app.intelligence_loop import intelligence_loop
+        from app.agent_insights import build_agent_insights, load_agent_insights, save_agent_insights
 
-        return intelligence_loop.get_agent_insights()
+        if refresh:
+            insights = build_agent_insights(refresh_lunar=True)
+            save_agent_insights(insights)
+            return insights
+
+        saved = load_agent_insights()
+        if saved:
+            return saved
+
+        insights = build_agent_insights()
+        save_agent_insights(insights)
+        return insights
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -1900,6 +2447,93 @@ async def get_fo_rules():
         return {"rules": [], "error": str(exc)}
 
 
+def _build_options_algo_status_full() -> dict:
+    """Full automated options status — file-backed regime context + optional Kite MTM."""
+    return _get_options_algo_status(fast=False, include_market_context=True)
+
+
+def _close_options_algo_structure(structure_id: str, *, reason: str = "manual_close") -> dict:
+    """Paper-safe close routed through OptionsExecutionEngine."""
+    from app.config_loader import get_options_config
+    from app.options_execution_engine import options_execution_engine
+
+    force_dry_run = True
+    if risk_gatekeeper:
+        force_dry_run = bool(risk_gatekeeper.config.force_dry_run)
+
+    cfg = get_options_config()
+    kite = _get_kite_client()
+    return options_execution_engine.close_structure(
+        kite,
+        structure_id,
+        reason=reason,
+        force_dry_run=force_dry_run,
+        product=cfg.get("product", "NRML"),
+    )
+
+
+@app.get("/api/options/algo/status")
+async def options_algo_status(fast: bool = False):
+    """Automated options structures (iron condor) — open positions, gates, last cycle."""
+    if fast:
+        return await asyncio.to_thread(
+            lambda: _get_options_algo_status(fast=True, include_market_context=False)
+        )
+    return await asyncio.to_thread(_build_options_algo_status_full)
+
+
+@app.post("/api/options/algo/close/{structure_id}")
+async def options_algo_close(structure_id: str):
+    """Manually flatten an open automated structure (respects FORCE_DRY_RUN / paper mode)."""
+    result = await asyncio.to_thread(_close_options_algo_structure, structure_id)
+    if not result.get("success"):
+        return JSONResponse(result, status_code=400)
+    return result
+
+
+@app.get("/api/settings/trading")
+async def get_trading_settings():
+    """Portal-editable trading toggles (options/futures/sheet) — no restart required."""
+    from app.trading_controls import get_trading_controls_status
+
+    return await asyncio.to_thread(get_trading_controls_status)
+
+
+@app.patch("/api/settings/trading")
+async def patch_trading_settings(request: Request):
+    """Update runtime trading controls; persists to data/trading_controls.json."""
+    from app.trading_controls import update_trading_controls
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        return JSONResponse({"success": False, "message": "JSON body required"}, status_code=400)
+    result = await asyncio.to_thread(update_trading_controls, body, updated_by="settings_ui")
+    if not result.get("success"):
+        return JSONResponse(result, status_code=400)
+    return result
+
+
+@app.post("/api/settings/trading/reset")
+async def reset_trading_settings():
+    """Clear portal overrides — revert to .env + strategy_config.yaml."""
+    from app.trading_controls import reset_trading_controls
+
+    return await asyncio.to_thread(reset_trading_controls, updated_by="settings_ui")
+
+
+@app.get("/api/options/desk/tickers")
+async def get_options_desk_tickers():
+    """Live ATM CE/PE tickers for NIFTY, BANKNIFTY, and SENSEX."""
+    from app.options_desk_tickers import get_index_option_tickers
+
+    kite = _get_kite_client()
+    ws_feed = _get_engine_ws_feed()
+    return await asyncio.to_thread(get_index_option_tickers, kite, ws_feed)
+
+
 @app.get("/api/options/chain/{underlying}")
 async def get_options_chain(underlying: str, expiry: Optional[str] = None, spot: Optional[float] = None):
     """Option chain snapshot for NIFTY / BANKNIFTY / SENSEX (Phase 0B infrastructure)."""
@@ -2055,26 +2689,59 @@ async def kite_login_status():
     return status
 
 
-@app.get("/api/kite/status")
-async def kite_connection_status():
-    """Non-sensitive Kite connectivity check for the React UI."""
-    api_key = os.getenv("KITE_API_KEY", "")
-    has_token = bool(os.getenv("KITE_ACCESS_TOKEN", ""))
+def _build_kite_connection_status(*, network: bool = True) -> dict:
+    """Kite profile probe — cached to avoid hammering Kite on sidebar polls."""
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+    api_key = os.getenv("KITE_API_KEY", "") or ""
+    access_token = os.getenv("KITE_ACCESS_TOKEN", "") or ""
     has_secret = bool(os.getenv("KITE_API_SECRET", ""))
+    token_key = f"{api_key[:6]}:{access_token[:12]}"
+
+    now = time.time()
+    cached = _kite_status_cache.get("payload")
+    if (
+        cached
+        and _kite_status_cache.get("token_key") == token_key
+        and now - float(_kite_status_cache.get("ts") or 0) < KITE_STATUS_CACHE_SEC
+    ):
+        out = dict(cached)
+        out["timestamp"] = datetime.now().isoformat()
+        out["cached"] = True
+        return out
 
     status = {
         "api_key_configured": bool(api_key),
         "api_key_preview": f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else None,
         "api_secret_configured": has_secret,
-        "access_token_configured": has_token,
+        "access_token_configured": bool(access_token),
         "connected": False,
         "latency_ms": None,
         "error": None,
         "error_code": None,
         "timestamp": datetime.now().isoformat(),
+        "cached": False,
     }
 
-    if not api_key or not has_token:
+    if not api_key or not access_token:
+        status["error"] = "Missing KITE_API_KEY or KITE_ACCESS_TOKEN"
+        status["error_code"] = "KITE_CREDENTIALS_MISSING"
+        return status
+
+    try:
+        from app.token_manager import get_token_manager
+        mgr = get_token_manager()
+        if mgr and not network:
+            status["connected"] = bool(mgr.token_valid)
+            status["needs_relogin"] = bool(mgr.needs_relogin)
+            if not mgr.token_valid:
+                status["error"] = "Kite session invalid — run generate_token.py or Settings → Auto Login"
+                status["error_code"] = "KITE_TOKEN_EXPIRED" if mgr.needs_relogin else "KITE_CREDENTIALS_MISSING"
+            return status
+    except Exception:
+        pass
+
+    if _get_kite_client() is None:
         status["error"] = "Missing KITE_API_KEY or KITE_ACCESS_TOKEN"
         status["error_code"] = "KITE_CREDENTIALS_MISSING"
         return status
@@ -2086,6 +2753,8 @@ async def kite_connection_status():
     if res.get("error_code"):
         status["error"] = res.get("error")
         status["error_code"] = res.get("error_code")
+        status["needs_relogin"] = res.get("error_code") == "KITE_TOKEN_EXPIRED"
+        _kite_status_cache.update(payload=dict(status), ts=now, token_key=token_key)
         return status
 
     profile = res.get("data") or {}
@@ -2099,13 +2768,100 @@ async def kite_connection_status():
         status["faq_checklist"] = faq_checklist()
     except Exception:
         pass
+    _kite_status_cache.update(payload=dict(status), ts=now, token_key=token_key)
+    _token_valid_cache["valid"] = True
+    _token_valid_cache["ts"] = now
     return status
+
+
+@app.get("/api/kite/status")
+async def kite_connection_status(quick: bool = False):
+    """Kite connectivity for React UI — cached profile probe (45s default)."""
+    if quick:
+        return await asyncio.to_thread(_build_kite_connection_status, network=False)
+    return await asyncio.to_thread(_build_kite_connection_status)
+
+
+# ==================== OPS HUB (scripts/algo_lab_ops.py parity) ====================
+
+def _clamp_audit_days(days: int, *, default: int = 1, max_days: int = 14) -> int:
+    try:
+        value = int(days)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, max_days))
+
+
+@app.get("/api/ops/preflight")
+async def get_ops_preflight(days: int = 1, skip_token: bool = False):
+    """Morning readiness: status + compliance + data-health + WFO (ops_hub.run_preflight)."""
+    try:
+        from app.ops_hub import run_preflight
+
+        return await asyncio.to_thread(
+            run_preflight,
+            validate_token=not skip_token,
+            audit_days=_clamp_audit_days(days),
+        )
+    except Exception as exc:
+        return {
+            "ready": False,
+            "error": str(exc),
+            "blockers": [str(exc)],
+            "warnings": [],
+            "timestamp": datetime.now().isoformat(),
+        }
+
+
+@app.get("/api/ops/status")
+async def get_ops_status(skip_token: bool = False):
+    """System health snapshot (ops_hub.build_status_report)."""
+    try:
+        from app.ops_hub import build_status_report
+
+        report = await asyncio.to_thread(build_status_report, validate_token=not skip_token)
+        report["timestamp"] = datetime.now().isoformat()
+        return report
+    except Exception as exc:
+        return {
+            "healthy": False,
+            "error": str(exc),
+            "blockers": [str(exc)],
+            "warnings": [],
+            "timestamp": datetime.now().isoformat(),
+        }
+
+
+@app.get("/api/ops/compliance")
+async def get_ops_compliance():
+    """Code-checkable COMPLIANCE.md items (ops_hub.run_compliance_checks)."""
+    try:
+        from app.ops_hub import run_compliance_checks
+
+        report = await asyncio.to_thread(run_compliance_checks)
+        report["timestamp"] = datetime.now().isoformat()
+        return report
+    except Exception as exc:
+        return {
+            "passed": False,
+            "error": str(exc),
+            "automated_passed": 0,
+            "automated_total": 0,
+            "checks": [],
+            "timestamp": datetime.now().isoformat(),
+        }
 
 
 # Health check + system diagnostics (extremely useful when GUI is "deployed" and things feel broken)
 @app.get("/health")
 async def health():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    # Keep this path free of thread-pool work, Kite, or ledger I/O.
+    return {
+        "status": "ok",
+        "timestamp": datetime.now().isoformat(),
+        "engine_ready": _engine_ready(),
+        "singletons_loaded": _engine_ready(),
+    }
 
 
 @app.get("/api/system/info")
@@ -2121,7 +2877,7 @@ async def system_info():
     return info
 
 
-# React Algo Lab (production build) — single-port at :8050/ui/
+# React Aegis UI (production build) — single-port at :8050/ui/
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 if FRONTEND_DIST.exists():
     _ui_assets = FRONTEND_DIST / "assets"

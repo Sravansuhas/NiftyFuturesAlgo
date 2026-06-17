@@ -7,15 +7,32 @@ is disabled, stale, or disconnected.
 """
 
 import logging
+import os
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from kiteconnect import KiteTicker
+
+if TYPE_CHECKING:
+    from .candle_builder import CandleBuilder
 
 logger = logging.getLogger(__name__)
 
 STALE_PRICE_SECONDS = 15.0
+
+_ACTIVE_WS_FEED: Optional["KiteWebSocketFeed"] = None
+
+
+def register_ws_feed(feed: Optional["KiteWebSocketFeed"]) -> None:
+    """Expose the engine WebSocket feed to dashboard / API helpers (same process)."""
+    global _ACTIVE_WS_FEED
+    _ACTIVE_WS_FEED = feed
+
+
+def get_active_ws_feed() -> Optional["KiteWebSocketFeed"]:
+    return _ACTIVE_WS_FEED
 
 
 class BaseDataFeed:
@@ -45,7 +62,14 @@ class KiteWebSocketFeed(BaseDataFeed):
     Reference: zerodha/pykiteconnect examples/threaded_ticker.py
     """
 
-    def __init__(self, api_key: str, access_token: str):
+    def __init__(
+        self,
+        api_key: str,
+        access_token: str,
+        *,
+        candle_builder: Optional["CandleBuilder"] = None,
+        enable_quote_mode: Optional[bool] = None,
+    ):
         self.api_key = api_key
         self.access_token = access_token
         self.kws: Optional[KiteTicker] = None
@@ -54,6 +78,16 @@ class KiteWebSocketFeed(BaseDataFeed):
         self._lock = threading.Lock()
         self._connected = False
         self._subscribed: List[int] = []
+        if enable_quote_mode is None:
+            enable_quote_mode = os.getenv("ENABLE_WS_QUOTE", "false").strip().lower() in {
+                "1", "true", "yes", "on",
+            }
+        self._enable_quote_mode = bool(enable_quote_mode)
+        self._candle_builder = candle_builder
+        if self._enable_quote_mode and self._candle_builder is None:
+            from .candle_builder import CandleBuilder
+
+            self._candle_builder = CandleBuilder()
 
     def start(self) -> None:
         if self.kws is not None:
@@ -111,8 +145,10 @@ class KiteWebSocketFeed(BaseDataFeed):
             return
         try:
             self.kws.subscribe(tokens)
-            self.kws.set_mode(self.kws.MODE_LTP, tokens)
-            logger.info(f"Subscribed to {len(tokens)} tokens via WebSocket (LTP mode)")
+            mode = self.kws.MODE_QUOTE if self._enable_quote_mode else self.kws.MODE_LTP
+            self.kws.set_mode(mode, tokens)
+            mode_label = "QUOTE" if self._enable_quote_mode else "LTP"
+            logger.info(f"Subscribed to {len(tokens)} tokens via WebSocket ({mode_label} mode)")
         except Exception as exc:
             logger.warning(f"WebSocket subscribe failed: {exc}")
 
@@ -132,6 +168,9 @@ class KiteWebSocketFeed(BaseDataFeed):
         _, age = self.get_last_price_with_age(token)
         return age > max_age_seconds
 
+    def get_candle_builder(self) -> Optional["CandleBuilder"]:
+        return self._candle_builder
+
     def is_connected(self) -> bool:
         if self.kws is not None and hasattr(self.kws, "is_connected"):
             try:
@@ -149,6 +188,37 @@ class KiteWebSocketFeed(BaseDataFeed):
                 if token and ltp is not None:
                     self._prices[int(token)] = float(ltp)
                     self._timestamps[int(token)] = now
+
+        if self._candle_builder:
+            for tick in ticks:
+                self._dispatch_tick_to_builder(tick)
+
+    def _dispatch_tick_to_builder(self, tick: dict) -> None:
+        if not self._candle_builder:
+            return
+        token = tick.get("instrument_token")
+        ltp = tick.get("last_price")
+        if not token or ltp is None:
+            return
+        ts = tick.get("timestamp") or tick.get("exchange_timestamp")
+        if isinstance(ts, datetime):
+            tick_ts = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+        elif isinstance(ts, (int, float)):
+            tick_ts = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+        else:
+            tick_ts = datetime.fromtimestamp(time.time(), tz=timezone.utc)
+        volume = tick.get("volume")
+        oi = tick.get("oi")
+        try:
+            self._candle_builder.on_tick(
+                int(token),
+                float(ltp),
+                tick_ts,
+                volume=int(volume) if volume is not None else None,
+                oi=int(oi) if oi is not None else None,
+            )
+        except Exception as exc:
+            logger.debug("CandleBuilder tick dispatch skipped: %s", exc)
 
     def _on_connect(self, ws, response):
         self._connected = True

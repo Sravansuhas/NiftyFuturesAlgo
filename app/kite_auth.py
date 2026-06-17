@@ -201,6 +201,12 @@ def save_tokens(
             mgr.reload_from_env()
     except Exception:
         pass
+    try:
+        from web.dashboard import invalidate_kite_dashboard_caches
+
+        invalidate_kite_dashboard_caches()
+    except Exception:
+        pass
 
 
 def exchange_request_token(
@@ -349,7 +355,7 @@ def _make_handler(
 <div style="text-align:center;padding:32px;border:1px solid #27272a;border-radius:16px;background:#18181b">
 <h1 style="color:{color}">{'Success' if success else 'Error'}</h1>
 <p>{message}</p>
-<p style="color:#a1a1aa;font-size:0.875rem">Return to AG Quant terminal.</p>
+<p style="color:#a1a1aa;font-size:0.875rem">Return to Aegis terminal.</p>
 </div></body></html>"""
             encoded = body.encode("utf-8")
             self.send_response(200)

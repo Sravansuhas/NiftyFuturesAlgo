@@ -145,6 +145,7 @@ class IntelligenceLoop:
             "promotion_status": {},
             "memory_snapshot": {},
             "macro_context": {},
+            "market_context": {},
             "overnight_context": {},
             "posture": {},
             "risk_notes": [],
@@ -155,6 +156,13 @@ class IntelligenceLoop:
             brief["macro_context"] = fetch_macro_context()
         except Exception as exc:
             brief["risk_notes"].append(f"Macro context unavailable: {exc}")
+
+        try:
+            from app.market_context import build_market_context
+
+            brief["market_context"] = build_market_context()
+        except Exception as exc:
+            brief["risk_notes"].append(f"Market context unavailable: {exc}")
 
         try:
             from app.overnight_context import build_overnight_context
@@ -288,6 +296,10 @@ class IntelligenceLoop:
                 f"FII/DII: FII ₹{fii.get('fii_net_crores')} Cr | DII ₹{fii.get('dii_net_crores')} Cr "
                 f"| bias={fii.get('flow_bias')}"
             )
+        mc = brief.get("market_context") or {}
+        mc_hints = mc.get("session_hints") or {}
+        if mc.get("available") and mc_hints.get("open_bias"):
+            lines.append(f"Open bias: {mc_hints.get('open_bias')} (floor={mc_hints.get('posture_floor')})")
         oh = brief.get("overnight_context") or {}
         nifty_oh = oh.get("NIFTY") or {}
         if oh.get("available"):

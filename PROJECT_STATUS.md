@@ -1,4 +1,4 @@
-# NiftyFuturesAlgo - Project Status & Checklist
+# Aegis — Project Status & Checklist
 
 **Last Updated:** 2026-05 (Founder Vision 2026 fully documented in real repo)
 
@@ -189,7 +189,7 @@ The system now fulfills the core request: "the algo should do a repetitive learn
   - `GET /api/memory/insights` + `/api/memory/report`
   - `GET /api/kite/real_fills_analysis` (uses `/trades` + `/orders` + cost model → calibration notes)
   - `/api/kite/orders` added.
-- **Super GUI (backtest.html)** — Complete redesign into a 5-tab professional Algo Lab:
+- **Super GUI (backtest.html)** — Complete redesign into a 5-tab professional Aegis dashboard:
   - Run Validation (presets, real Kite toggle, live progress bar + stage + error_code display)
   - Results & Charts (detailed fold/regime tables, auto notes from run)
   - Market Learnings & Docs (the heart: regime stats cards, auto-generated falsifiable notes, best params)
@@ -211,7 +211,7 @@ The system now fulfills the core request: "the algo should do a repetitive learn
 
 ## 9. Super Smooth & Capable GUI + Production Polish
 
-The /backtest "Algo Lab" is now the flagship interface:
+The /backtest Aegis dashboard is now the flagship interface:
 - Bloomberg-terminal dark aesthetic, consistent with live terminal.
 - Zero page reloads, background jobs with real-time stage/progress/error_code.
 - Local presets + exports.

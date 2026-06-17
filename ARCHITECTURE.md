@@ -1,4 +1,4 @@
-# NiftyFuturesAlgo — Architecture (Current + Vision)
+# Aegis — Architecture (Current + Vision)
 
 **Status**: v1.0 — May 2026 (post vision lock)
 
@@ -43,7 +43,7 @@ Execution
 │
 ▼
 Observability & Learning
-├── Web dashboard ("Algo Lab" — 5 tabs: validation, results, market learnings, real fills, presets)
+├── Web dashboard ("Aegis" — 5 tabs: validation, results, market learnings, real fills, presets)
 ├── backtest_memory.py (auto-generates regime notes + confidence from every WFA run)
 ├── Real /trades + /orders analysis for cost calibration
 ├── Trade ledger + equity curve + diagnostics

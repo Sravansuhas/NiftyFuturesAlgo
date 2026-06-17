@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Algo Lab — NiftyFuturesAlgo</title>
+    <title>Aegis — Risk-First Indian F&amp;O Platform</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -96,7 +96,7 @@
         <div class="flex items-center justify-between mb-4">
             <div>
                 <div class="flex items-center gap-3">
-                    <h1 class="text-4xl font-semibold tracking-tighter">NIFTY FUTURES ALGO LAB</h1>
+                    <h1 class="text-4xl font-semibold tracking-tighter">AEGIS</h1>
                     <span class="px-2.5 py-0.5 text-[10px] font-mono bg-emerald-900/60 text-emerald-400 rounded">v0.5.1 • HARDENED</span>
                     <!-- Dynamic Research Mode Indicator -->
                     <span id="research-mode-indicator" 
@@ -104,7 +104,7 @@
                         🔬 RESEARCH MODE ACTIVE
                     </span>
                 </div>
-                <p class="text-gray-400 text-sm mt-0.5">Walk-forward validation • Auto-generated regime documentation • Real Kite fills &amp; cost learning</p>
+                <p class="text-gray-400 text-sm mt-0.5">Aegis — risk-first Indian F&amp;O platform · Walk-forward validation · Auto-generated regime documentation · Real Kite fills &amp; cost learning</p>
             </div>
             <div class="flex items-center gap-2">
                 <button onclick="window.location.reload()" class="px-4 py-2 text-sm bg-[#111318] hover:bg-[#1f2937] border border-gray-800 rounded-2xl transition">Refresh</button>
@@ -1324,12 +1324,12 @@
                 folds: currentResult.folds || [],
                 learning_notes: currentResult.learning_notes || [],
                 regime_aggregate: currentResult.regime_aggregate || {},
-                _note: "Exported from NiftyFuturesAlgo Algo Lab. Statistical power warning is included for professional use."
+                _note: "Exported from Aegis. Statistical power warning is included for professional use."
             };
             const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
             const a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            a.download = `nifty_wfa_report_${Date.now()}.json`;
+            a.download = `aegis_wfa_report_${Date.now()}.json`;
             a.click();
         }
 
@@ -1345,7 +1345,7 @@
             const blob = new Blob([csv], { type: "text/csv" });
             const a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            a.download = `nifty_wfa_folds_${Date.now()}.csv`;
+            a.download = `aegis_wfa_folds_${Date.now()}.csv`;
             a.click();
         }
 

@@ -1,4 +1,4 @@
-# NiftyFuturesAlgo — Morning Trading Baby Steps Guide
+# Aegis — Morning Trading Baby Steps Guide
 
 **Goal**: Safely start the live/paper trading system every morning with minimal friction and maximum safety.
 
@@ -47,7 +47,7 @@ Go to this address:
 
 Two important pages:
 - **Main view** (http://localhost:8050) → Live risk, P&L, position, market status.
-- **Algo Lab** (http://localhost:8050/backtest) → For backtesting (usually not needed during live hours).
+- **Aegis** (http://localhost:8050/backtest) → For backtesting (usually not needed during live hours).
 
 ### 4. Do These 4 Quick Safety Checks (Takes 20 seconds)
 
@@ -67,12 +67,33 @@ In the main dashboard:
 4. **Token Status**
    - Should say token is valid.
 
+### 4b. Expiry day (especially Tuesday — Nifty weekly)
+
+**Nifty weekly options expire every Tuesday.** On expiry days the system uses **gamma caution** — calendar discipline, not live portfolio gamma math.
+
+| When (IST) | What to expect |
+|------------|----------------|
+| **Before 09:45** | Safe window not open yet (opening auction noise). |
+| **09:45 – 12:00** | **Soft caution (Level 1)** — trading may continue with smaller size / warnings. Options desk shows amber **Caution** if the iron-condor algo is on. |
+| **12:00 onwards** | **Hard block (Level 2)** — **no new entries** for futures and new iron condors. Open positions still managed (exits OK). |
+
+**Quick checks on expiry mornings:**
+
+1. Sidebar / market status — look for expiry flags (`is_expiry_day`) or message *EXPIRY DAY — trade with extreme caution*.
+2. **Live Options Desk → Regime gates** — **Caution** (amber) before noon; **Blocked** (red) after cutoff if gates fail.
+3. **Cycle status** — after 12:00, expect `Last cycle skipped: regime_gate` when flat.
+4. **Algo ledger** — `options.cycle.skip` events with reason `regime_gate` and details mentioning *gamma caution*.
+
+Default cutoff is **12:00 IST** in `config/strategy_config.yaml` (`expiry_day_cutoff_hour` for futures, `expiry_day_entry_cutoff_hour` for options). Change only if you understand the extra afternoon risk.
+
+Full technical reference: `docs/EXPIRY_GAMMA_CAUTION.md`.
+
 ### 5. During the Trading Day
 
 - Keep the terminal window open (or use tmux / split screen).
 - The terminal is now intentionally calm — most noise is hidden.
 - Use the **dashboard** for detailed live information.
-- If you ever start a long backtest from the Algo Lab and want to stop it → Click the red **"STOP / CANCEL RUNNING JOB"** button.
+- If you ever start a long backtest from the Aegis and want to stop it → Click the red **"STOP / CANCEL RUNNING JOB"** button.
 
 ### 6. End of Day Shutdown (Very Important)
 

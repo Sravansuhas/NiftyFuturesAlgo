@@ -1,6 +1,6 @@
-# Kite Connect Integration — Full Capabilities & Project Usage
+# Aegis — Kite Connect Integration — Full Capabilities & Project Usage
 
-**Purpose**: Single source of truth for what Zerodha Kite Connect v3 can do (as of 2026) and exactly how NiftyFuturesAlgo currently uses it — plus the migration plan to support the full founder vision (BankNifty, Sensex, options, real-time candles, pre-trade risk).
+**Purpose**: Single source of truth for what Zerodha Kite Connect v3 can do (as of 2026) and exactly how Aegis currently uses it — plus the migration plan to support the full founder vision (BankNifty, Sensex, options, real-time candles, pre-trade risk).
 
 **Last Updated**: 2026-05
 

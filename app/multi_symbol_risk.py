@@ -17,6 +17,7 @@ from .risk_gatekeeper import RiskGatekeeper, RiskConfig
 from .state_machine import state_machine
 from .audit_logger import audit_logger
 from .micro_live import MicroLiveConfig, cap_order_quantity, load_micro_live_config
+from .config_loader import get_symbol_max_trades, normalize_index_key
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,10 @@ class MultiSymbolRiskManager:
         self.symbol_daily_loss: Dict[str, float] = {"NIFTY": 0.0, "BANKNIFTY": 0.0, "SENSEX": 0.0}
 
         self.pending_orders: Dict[str, Dict] = {}
-        self.max_trades_per_symbol_per_day = 3
+        self._symbol_max_trades: Dict[str, int] = {
+            sym: get_symbol_max_trades(sym) for sym in ("NIFTY", "BANKNIFTY", "SENSEX")
+        }
+        self.max_trades_per_symbol_per_day = max(self._symbol_max_trades.values(), default=3)
         self.max_daily_loss_per_symbol_pct = 0.01
         self.last_loss_timestamp: float = 0.0
         self.broker_connected: bool = True
@@ -104,12 +108,12 @@ class MultiSymbolRiskManager:
         return self.positions.get(key, SymbolPosition())
 
     def _normalize_symbol(self, symbol: str) -> str:
-        s = symbol.upper()
-        if "BANKNIFTY" in s or "BNF" in s:
-            return "BANKNIFTY"
-        if "SENSEX" in s:
-            return "SENSEX"
-        return "NIFTY"
+        return normalize_index_key(symbol)
+
+    def get_max_trades_for_symbol(self, symbol: str) -> int:
+        """YAML-driven per-index trade cap (adaptive budget may lower further)."""
+        key = self._normalize_symbol(symbol)
+        return self._symbol_max_trades.get(key, self.max_trades_per_symbol_per_day)
 
     def is_flat(self, symbol: Optional[str] = None) -> bool:
         if symbol:
@@ -189,7 +193,7 @@ class MultiSymbolRiskManager:
     def _build_budget_context(self, symbol: str) -> dict:
         key = self._normalize_symbol(symbol)
         market = {}
-        posture_max = self.max_trades_per_symbol_per_day
+        posture_max = self.get_max_trades_for_symbol(key)
         try:
             from .market_calendar import get_market_status
             market = get_market_status() or {}
@@ -235,7 +239,7 @@ class MultiSymbolRiskManager:
             posture_max = int(
                 live_posture.get(
                     "recommended_max_trades_per_day",
-                    self.max_trades_per_symbol_per_day,
+                    self.get_max_trades_for_symbol(key),
                 )
             )
         except Exception:
@@ -245,7 +249,7 @@ class MultiSymbolRiskManager:
                 posture_max = int(
                     (brief.get("posture") or {}).get(
                         "recommended_max_trades_per_day",
-                        self.max_trades_per_symbol_per_day,
+                        self.get_max_trades_for_symbol(key),
                     )
                 )
             except Exception:

@@ -7,3 +7,4 @@ uvicorn[standard]
 jinja2
 python-multipart
 ephem
+psycopg[binary]

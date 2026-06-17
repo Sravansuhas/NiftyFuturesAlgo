@@ -241,6 +241,41 @@ class ImprovementLoop:
 
         return proposals
 
+    def submit_wfo_candidate(
+        self,
+        params: Dict[str, Any],
+        underlying: str,
+    ) -> Path:
+        """
+        Bridge WFO candidate params to human-gated improvement proposals.
+
+        Writes to data/improvement_proposals/ for founder review — NEVER auto-applies
+        overlays, risk config, or strategy parameters.
+        """
+        key = str(underlying or "NIFTY").upper()
+        if key not in INDICES:
+            raise ValueError(f"unsupported underlying: {underlying}")
+
+        proposal_id = f"wfo_candidate_{key.lower()}_{int(time.time())}"
+        description = (
+            f"WFO candidate for {key} — review params before promotion overlay. "
+            f"avg_pf={params.get('avg_pf')} avg_return={params.get('avg_return')} "
+            f"wfo_mode={params.get('wfo_mode', 'rolling_purged')}."
+        )
+        proposal = {
+            "id": proposal_id,
+            "proposal_type": "wfo_candidate",
+            "underlying": key,
+            "params": dict(params),
+            "severity": "medium",
+            "target": "backtesting.promotion_gates",
+            "description": description,
+            "human_gate_required": True,
+            "auto_apply": False,
+            "status": "pending_review",
+        }
+        return self.record_improvement_proposal(proposal)
+
     def record_improvement_proposal(self, proposal: Dict[str, Any]) -> Path:
         """Save proposal to data/improvement_proposals/{timestamp}.json."""
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")

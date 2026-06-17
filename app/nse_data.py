@@ -194,24 +194,94 @@ def fetch_india_vix(timeout: float = 12.0) -> Dict[str, Any]:
     return {"available": False, "fetched_at": now_ist().isoformat()}
 
 
+def _parse_fii_dii_rows(rows: Any) -> Optional[Dict[str, Any]]:
+    """
+    Parse NSE fiidiiTradeReact payload.
+
+    Supports:
+    - New array: [{"category":"DII","netValue":"5341.29","date":"12-Jun-2026"}, ...]
+    - Legacy row/list: {"fiiNetValue": ..., "diiNetValue": ..., "date": ...}
+    """
+    if not rows:
+        return None
+
+    if isinstance(rows, dict):
+        if any(rows.get(k) is not None for k in ("fiiNetValue", "diiNetValue", "fii_net", "dii_net")):
+            fii = float(rows.get("fiiNetValue") or rows.get("fii_net") or 0)
+            dii = float(rows.get("diiNetValue") or rows.get("dii_net") or 0)
+            return {
+                "fii": fii,
+                "dii": dii,
+                "trade_date": str(rows.get("date") or rows.get("tradeDate") or ""),
+            }
+        rows = rows.get("data") or [rows]
+
+    if not isinstance(rows, list) or not rows:
+        return None
+
+    first = rows[0] if rows else {}
+    if isinstance(first, dict) and any(
+        first.get(k) is not None for k in ("fiiNetValue", "diiNetValue", "fii_net", "dii_net")
+    ):
+        fii = float(first.get("fiiNetValue") or first.get("fii_net") or 0)
+        dii = float(first.get("diiNetValue") or first.get("dii_net") or 0)
+        return {
+            "fii": fii,
+            "dii": dii,
+            "trade_date": str(first.get("date") or first.get("tradeDate") or ""),
+        }
+
+    by_date: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        category = str(row.get("category") or "").upper().strip()
+        if not category:
+            continue
+        trade_date = str(row.get("date") or row.get("tradeDate") or "")
+        try:
+            net = float(row.get("netValue") or row.get("net_value") or 0)
+        except (TypeError, ValueError):
+            net = 0.0
+        bucket = by_date.setdefault(
+            trade_date,
+            {"fii": 0.0, "dii": 0.0, "trade_date": trade_date},
+        )
+        if "DII" in category:
+            bucket["dii"] = net
+        elif "FII" in category or "FPI" in category:
+            bucket["fii"] = net
+
+    if not by_date:
+        return None
+
+    dated_rows = [
+        (_parse_nse_date(trade_date) or date.min, trade_date, bucket)
+        for trade_date, bucket in by_date.items()
+    ]
+    dated_rows.sort(key=lambda item: item[0], reverse=True)
+    _, _, latest = dated_rows[0]
+    return {
+        "fii": float(latest.get("fii") or 0),
+        "dii": float(latest.get("dii") or 0),
+        "trade_date": str(latest.get("trade_date") or ""),
+    }
+
+
 def fetch_fii_dii_flow(timeout: float = 12.0) -> Dict[str, Any]:
     """FII/FPI vs DII net cash market flows (₹ Cr) — latest trading day."""
     try:
         session = _nse_session(timeout)
         resp = session.get(f"{NSE_HOME}/api/fiidiiTradeReact", timeout=timeout)
         resp.raise_for_status()
-        rows = resp.json()
-        if isinstance(rows, dict):
-            rows = rows.get("data") or [rows]
-        if not rows:
+        parsed = _parse_fii_dii_rows(resp.json())
+        if not parsed:
             return {"available": False}
-        latest = rows[0] if isinstance(rows, list) else rows
-        fii = float(latest.get("fiiNetValue") or latest.get("fii_net") or 0)
-        dii = float(latest.get("diiNetValue") or latest.get("dii_net") or 0)
-        trade_date = str(latest.get("date") or latest.get("tradeDate") or "")
+        fii = float(parsed["fii"])
+        dii = float(parsed["dii"])
         return {
             "available": True,
-            "trade_date": trade_date,
+            "trade_date": parsed["trade_date"],
             "fii_net_crores": round(fii, 2),
             "dii_net_crores": round(dii, 2),
             "flow_bias": _flow_bias(fii, dii),

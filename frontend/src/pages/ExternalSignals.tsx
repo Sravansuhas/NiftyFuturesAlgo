@@ -1,12 +1,16 @@
-import { Save, RefreshCw, Target, BookOpen, Loader2, Trash2 } from 'lucide-react';
+import { Save, RefreshCw, Target, BookOpen, Loader2, Trash2, Swords } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useOutletContext } from 'react-router-dom';
+import type { LayoutOutletContext } from '../components/Layout';
 import { api, ApiError } from '../api/client';
 import type {
   ExternalJournalRow,
   ExternalJournalStatus,
   ExternalOptionSide,
   ExternalSignalsSheet,
+  SheetVsAlgoComparison,
 } from '../api/types';
+import OptionsLegsPanel from '../components/OptionsLegsPanel';
 import EmptyState from '../components/ui/EmptyState';
 import PageShell from '../components/ui/PageShell';
 import { todayIst } from '../utils/dates';
@@ -14,10 +18,20 @@ import { formatINR, formatPrice, formatTime } from '../utils/format';
 
 const INDICES = ['SENSEX', 'NIFTY', 'BANKNIFTY'] as const;
 
-const INDEX_HEADER_CLASS: Record<string, string> = {
-  NIFTY: 'index-header--nifty',
-  BANKNIFTY: 'index-header--banknifty',
-  SENSEX: 'index-header--sensex',
+/** Entry order: SENSEX CE/PE → NIFTY 50 CE/PE → BANK NIFTY CE/PE; fields C·T·L then Strike. */
+const LEG_SPECS = [
+  { index: 'SENSEX', leg: 'call' as const, option_type: 'CE' as const, headerClass: 'index-header--sensex', sideLabel: 'Call (bullish)', prefix: 'C' as const },
+  { index: 'SENSEX', leg: 'put' as const, option_type: 'PE' as const, headerClass: 'index-header--sensex', sideLabel: 'Put (bearish)', prefix: 'P' as const },
+  { index: 'NIFTY', leg: 'call' as const, option_type: 'CE' as const, headerClass: 'index-header--nifty', sideLabel: 'Call (bullish)', prefix: 'C' as const },
+  { index: 'NIFTY', leg: 'put' as const, option_type: 'PE' as const, headerClass: 'index-header--nifty', sideLabel: 'Put (bearish)', prefix: 'P' as const },
+  { index: 'BANKNIFTY', leg: 'call' as const, option_type: 'CE' as const, headerClass: 'index-header--banknifty', sideLabel: 'Call (bullish)', prefix: 'C' as const },
+  { index: 'BANKNIFTY', leg: 'put' as const, option_type: 'PE' as const, headerClass: 'index-header--banknifty', sideLabel: 'Put (bearish)', prefix: 'P' as const },
+] as const;
+
+type PremiumIndexLive = {
+  call_ltp?: number;
+  put_ltp?: number;
+  error?: string;
 };
 
 const JOURNAL_LABELS: Record<ExternalJournalStatus, string> = {
@@ -48,7 +62,7 @@ function blankSheet(date: string): ExternalSignalsSheet {
   };
 }
 
-type PageTab = 'sheet' | 'journal';
+type PageTab = 'sheet' | 'journal' | 'versus';
 
 function PnlRow({ label, value, positive }: { label: string; value: number | null | undefined; positive?: boolean }) {
   if (value == null) return null;
@@ -123,16 +137,6 @@ function SideBlock({
       </div>
       <div className="field-grid field-grid--quad">
         <label className="field-label">
-          Strike
-          <input
-            className="input-field font-mono font-bold"
-            type="number"
-            value={num(side.strike)}
-            onChange={(e) => onChange({ strike: e.target.value === '' ? null : Number(e.target.value) })}
-            placeholder="23100"
-          />
-        </label>
-        <label className="field-label">
           {prefix} Entry
           <input
             className="input-field input-field--compact"
@@ -160,6 +164,16 @@ function SideBlock({
             value={num(side.stop_loss)}
             onChange={(e) => onChange({ stop_loss: e.target.value === '' ? null : Number(e.target.value) })}
             placeholder="L7"
+          />
+        </label>
+        <label className="field-label">
+          Strike price
+          <input
+            className="input-field font-mono font-bold"
+            type="number"
+            value={num(side.strike)}
+            onChange={(e) => onChange({ strike: e.target.value === '' ? null : Number(e.target.value) })}
+            placeholder="23100"
           />
         </label>
       </div>
@@ -257,6 +271,8 @@ export default function ExternalSignals() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [lastEvalAt, setLastEvalAt] = useState<string | null>(null);
+  const [comparison, setComparison] = useState<SheetVsAlgoComparison | null>(null);
+  const [versusDate, setVersusDate] = useState(todayIst());
   const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false);
 
@@ -270,6 +286,15 @@ export default function ExternalSignals() {
     setDirty(false);
   }, []);
 
+  const loadComparison = useCallback(async (date?: string) => {
+    try {
+      const res = await api.getSheetVsAlgoComparison(date ?? versusDate);
+      setComparison(res);
+    } catch (e) {
+      setMessage(`Scoreboard load failed: ${e}`);
+    }
+  }, [versusDate]);
+
   const loadJournal = useCallback(async (date?: string, allDates?: boolean) => {
     const showAll = allDates ?? journalAllDates;
     const filterDate = showAll ? undefined : (date ?? journalDate);
@@ -282,12 +307,14 @@ export default function ExternalSignals() {
     }
   }, [journalAllDates, journalDate]);
 
+  const { stream } = useOutletContext<LayoutOutletContext>();
+
   const load = useCallback(async (date: string) => {
     setLoading(true);
     setMessage(null);
     try {
       const [res, datesRes] = await Promise.all([
-        api.getExternalSignals(date),
+        api.getExternalSignals(date, { withPnl: false }),
         api.getExternalSignalDates(),
       ]);
       setSheet(res.sheet);
@@ -295,6 +322,16 @@ export default function ExternalSignals() {
       setSavedDates(datesRes.dates ?? []);
       setTradeDate(date);
       clearDirty();
+      if (date === todayIst()) {
+        api.getExternalSignalPremiums(date)
+          .then((premRes) => {
+            if (!dirtyRef.current && premRes.sheet) {
+              setSheet({ ...premRes.sheet, pnl_summary: premRes.pnl_summary ?? premRes.sheet.pnl_summary });
+            }
+            setPremiums(premRes.premiums as Record<string, unknown>);
+          })
+          .catch(() => { /* premiums load is best-effort after fast sheet */ });
+      }
     } catch (e) {
       setMessage(`Failed to load: ${e}`);
     } finally {
@@ -338,6 +375,10 @@ export default function ExternalSignals() {
   }, [activeTab, loadJournal, journalDate, journalAllDates]);
 
   useEffect(() => {
+    if (activeTab === 'versus') loadComparison(versusDate);
+  }, [activeTab, versusDate, loadComparison]);
+
+  useEffect(() => {
     if (activeTab === 'journal' && !journalAllDates) {
       setJournalDate(tradeDate);
     }
@@ -348,7 +389,7 @@ export default function ExternalSignals() {
     if (activeTab !== 'sheet' || !isToday) return undefined;
     const id = window.setInterval(() => {
       checkTargets(true);
-    }, 30_000);
+    }, 60_000);
     return () => window.clearInterval(id);
   }, [activeTab, tradeDate, checkTargets]);
 
@@ -472,6 +513,14 @@ export default function ExternalSignals() {
           <BookOpen size={14} className="mr-2" style={{ verticalAlign: 'middle' }} />
           Journal
         </button>
+        <button
+          type="button"
+          className={`bt-tab ${activeTab === 'versus' ? 'bt-tab-active' : ''}`}
+          onClick={() => setActiveTab('versus')}
+        >
+          <Swords size={14} className="mr-2" style={{ verticalAlign: 'middle' }} />
+          Sheet vs Algo
+        </button>
       </div>
       {activeTab === 'sheet' && (
         <>
@@ -529,12 +578,26 @@ export default function ExternalSignals() {
           </button>
         </>
       )}
+      {activeTab === 'versus' && (
+        <>
+          <input
+            type="date"
+            className="input-field input-field--compact"
+            style={{ width: 'auto' }}
+            value={versusDate}
+            onChange={(e) => setVersusDate(e.target.value)}
+          />
+          <button className="btn btn-secondary" onClick={() => loadComparison(versusDate)}>
+            <RefreshCw size={16} /> Refresh scoreboard
+          </button>
+        </>
+      )}
     </>
   );
 
   if (loading && !sheet) {
     return (
-      <PageShell subtitle="Enter CE/PE levels each morning — auto-tracks targets vs live Kite premiums.">
+      <PageShell subtitle="Six CE/PE legs (SENSEX → NIFTY 50 → BANK NIFTY) — enter C·T·L then strike; live premium charts below.">
         <EmptyState variant="centered" title="Loading options sheet…" />
       </PageShell>
     );
@@ -542,7 +605,7 @@ export default function ExternalSignals() {
 
   return (
     <PageShell
-      subtitle="Load a date → edit strike / C·T·L → Save (updates JSON). Delete day removes that date. Auto target-check pauses while you have unsaved edits."
+      subtitle="Manual CE/PE analysis — SENSEX first, then NIFTY 50 & BANK NIFTY; each leg: C·T·L then strike price. Feeds futures bias filter."
       actions={tabActions}
     >
       <div className="bento-grid">
@@ -555,7 +618,7 @@ export default function ExternalSignals() {
             {activeTab === 'sheet' && lastEvalAt && (
               <p className="text-xs text-muted m-0">
                 Last target check: {lastEvalAt}
-                {tradeDate === todayIst() ? ' · auto-refresh every 30s' : ''}
+                {tradeDate === todayIst() ? ' · auto-refresh every 60s' : ''}
               </p>
             )}
             {savedDates.length > 0 && activeTab === 'sheet' && (
@@ -565,6 +628,10 @@ export default function ExternalSignals() {
               </p>
             )}
           </div>
+        )}
+
+        {activeTab === 'sheet' && (
+          <OptionsLegsPanel legs={stream?.options_legs} />
         )}
 
         {activeTab === 'sheet' && sheet?.pnl_summary && sheet.pnl_summary.legs != null && sheet.pnl_summary.legs > 0 && (
@@ -606,43 +673,151 @@ export default function ExternalSignals() {
             <p className="text-xs text-muted mb-3 m-0">
               {journalAllDates
                 ? 'Showing every saved leg across all trade dates.'
-                : 'Showing legs with entry, target, stop, or strike for the selected date. Fill all three index tiles on the sheet tab, then Save.'}
+                : 'Showing legs with entry, target, stop, or strike for the selected date. Fill all six leg tiles on the sheet tab, then Save.'}
             </p>
             <JournalTable rows={journalRows} />
           </div>
         )}
 
-        {activeTab === 'sheet' && sheet && INDICES.map((idx) => {
-          const block = sheet.indices[idx] ?? { call: EMPTY_SIDE, put: EMPTY_SIDE };
-          const live = (premiums as { indices?: Record<string, { call_ltp?: number; put_ltp?: number; error?: string }> })?.indices?.[idx];
+        {activeTab === 'versus' && (
+          <div className="bento-tile" style={{ gridColumn: 'span 12' }}>
+            <h3 className="tile-title text-base mb-1">Sheet vs Algo — {versusDate}</h3>
+            <p className="text-xs text-muted mb-3 m-0">
+              Manual options sheet MTM (1-lot net) compared with futures algo daily P&amp;L per index.
+              {comparison?.integration_enabled
+                ? ` Algo integration: ${comparison.integration_mode ?? 'filter'} mode.`
+                : ' Sheet integration is off in config.'}
+            </p>
+            {!comparison ? (
+              <EmptyState variant="inline" title="Loading scoreboard…" />
+            ) : !comparison.available ? (
+              <EmptyState
+                variant="inline"
+                title="No data for this date"
+                message="Save strikes and entries on the Options Sheet tab, or run the algo on this day."
+              />
+            ) : (
+              <>
+                <div className="pnl-summary-grid mb-4">
+                  <div>
+                    <div className="pnl-summary-label">Sheet total (options MTM)</div>
+                    <div className={`font-mono text-lg font-bold ${comparison.manual_total_pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+                      {formatINR(comparison.manual_total_pnl, true)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="pnl-summary-label">Algo total (futures)</div>
+                    <div className={`font-mono text-lg font-bold ${comparison.algo_total_pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+                      {formatINR(comparison.algo_total_pnl, true)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="pnl-summary-label">Overall winner</div>
+                    <div className={`font-mono text-lg font-bold ${
+                      comparison.overall_winner === 'sheet'
+                        ? 'text-profit'
+                        : comparison.overall_winner === 'algo'
+                          ? 'text-brand'
+                          : 'text-muted'
+                    }`}>
+                      {comparison.overall_winner === 'sheet'
+                        ? 'Sheet'
+                        : comparison.overall_winner === 'algo'
+                          ? 'Algo'
+                          : 'Tie'}
+                    </div>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="data-table w-full text-sm">
+                    <thead>
+                      <tr>
+                        <th>Index</th>
+                        <th>Sheet bias</th>
+                        <th>Sheet P&amp;L</th>
+                        <th>Algo P&amp;L</th>
+                        <th>Sheet legs</th>
+                        <th>Algo trades</th>
+                        <th>Winner</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {comparison.per_index.map((row) => (
+                        <tr key={row.symbol}>
+                          <td className="font-semibold">{row.symbol}</td>
+                          <td className="text-muted capitalize">{row.sheet_bias ?? '—'}</td>
+                          <td className={`font-mono ${row.sheet_pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+                            {formatINR(row.sheet_pnl, true)}
+                          </td>
+                          <td className={`font-mono ${row.algo_pnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+                            {formatINR(row.algo_pnl, true)}
+                          </td>
+                          <td className="text-muted">
+                            {row.sheet_legs ?? 0}
+                            {(row.sheet_targets ?? 0) > 0 || (row.sheet_stops ?? 0) > 0
+                              ? ` · ${row.sheet_targets ?? 0}T / ${row.sheet_stops ?? 0}S`
+                              : ''}
+                          </td>
+                          <td className="text-muted">{row.algo_trades ?? 0}</td>
+                          <td className={
+                            row.winner === 'sheet'
+                              ? 'text-profit font-semibold'
+                              : row.winner === 'algo'
+                                ? 'text-brand font-semibold'
+                                : 'text-muted'
+                          }>
+                            {row.winner === 'sheet' ? 'Sheet' : row.winner === 'algo' ? 'Algo' : 'Tie'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {comparison.notes && (
+                  <p className="text-xs text-muted mt-3 mb-0">Day notes: {comparison.notes}</p>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'sheet' && sheet && LEG_SPECS.map((spec) => {
+          const block = sheet.indices[spec.index] ?? { call: EMPTY_SIDE, put: EMPTY_SIDE };
+          const side = block[spec.leg] ?? EMPTY_SIDE;
+          const live = (premiums as { indices?: Record<string, PremiumIndexLive> })?.indices?.[spec.index];
+          const liveLtp = spec.leg === 'call' ? live?.call_ltp : live?.put_ltp;
+          const displayName = displayNames[spec.index] ?? spec.index;
           return (
-            <div key={idx} className="bento-tile" style={{ gridColumn: 'span 4' }}>
-              <div className={`index-header ${INDEX_HEADER_CLASS[idx]}`}>
-                {displayNames[idx] ?? idx}
+            <div key={`${spec.index}-${spec.leg}`} className="bento-tile" style={{ gridColumn: 'span 4' }}>
+              <div className={`index-header ${spec.headerClass}`}>
+                {displayName} {spec.option_type}
               </div>
-              <SideBlock
-                label="Call (bullish)"
-                prefix="C"
-                side={block.call ?? EMPTY_SIDE}
-                onChange={(p) => updateSide(idx, 'call', p)}
-              />
-              <SideBlock
-                label="Put (bearish)"
-                prefix="P"
-                side={block.put ?? EMPTY_SIDE}
-                onChange={(p) => updateSide(idx, 'put', p)}
-              />
               {live && !live.error && (
-                <div className="text-xs text-muted border-t border-dim pt-3">
-                  Kite LTP: CE {formatPrice(live.call_ltp)} · PE {formatPrice(live.put_ltp)}
+                <div className={`options-leg-live-header options-leg-live-header--${spec.option_type === 'CE' ? 'ce' : 'pe'}`}>
+                  <span className="text-2xs font-bold uppercase text-muted">Kite LTP</span>
+                  <span className="font-mono text-xl font-bold">{formatPrice(liveLtp)}</span>
                 </div>
               )}
               {live?.error && (
-                <div className="text-xs text-muted">Kite: {live.error}</div>
+                <div className="text-xs text-muted mb-2">Kite: {live.error}</div>
               )}
+              <SideBlock
+                label={spec.sideLabel}
+                prefix={spec.prefix}
+                side={side}
+                onChange={(p) => updateSide(spec.index, spec.leg, p)}
+              />
             </div>
           );
         })}
+
+        {activeTab === 'sheet' && (
+          <div className="bento-tile dashboard-alert dashboard-alert--info" style={{ gridColumn: 'span 12' }}>
+            <strong>Algo reads this sheet.</strong> CE-only → algo may take LONG futures, blocks SHORT.
+            PE-only → blocks LONG. Both legs → balanced (both directions allowed in filter mode).
+            Change mode in <code className="font-mono text-xs">config/strategy_config.yaml</code> → <code>external_signals.mode</code>.
+          </div>
+        )}
 
         {activeTab === 'sheet' && sheet && (
           <div className="bento-tile" style={{ gridColumn: 'span 12' }}>

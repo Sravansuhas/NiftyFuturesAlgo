@@ -1,4 +1,4 @@
-# Phase 0: Futures Foundation — Diagnostics & Logging Guide
+# Aegis — Phase 0: Futures Foundation — Diagnostics & Logging Guide
 
 **Goal of this phase:** Make NIFTY + BANKNIFTY + SENSEX futures paper trading **boringly reliable and fully diagnosable**.
 

@@ -1,4 +1,4 @@
-# Indian F&O Knowledge Base — Rules, Realities & Retail Failure Patterns
+# Aegis — Indian F&O Knowledge Base — Rules, Realities & Retail Failure Patterns
 
 **Purpose**: The living, versioned brain of anti-patterns, market mechanics, costs, and hard rules that the agentic system must internalize and enforce. This is not generic education — it is operational, encodable knowledge that directly influences risk multipliers, filters, and strategy vetoes.
 
@@ -25,6 +25,16 @@
 - **Sensex (BSE)**: Weekly expiries continue every **Thursday**. Monthly contracts expire on the **last Thursday** of the month.
 - If the scheduled expiry day is a holiday, expiry shifts to the previous trading day.
 - **Note**: Expiry pinning and gamma risk remain highest on weekly expiry days (especially Thursdays for Sensex and Tuesdays for Nifty).
+
+**How Aegis encodes this (June 2026)** — see `docs/EXPIRY_GAMMA_CAUTION.md`:
+
+| Level | Meaning | Enforcement |
+|-------|---------|-------------|
+| **0** | Normal session | No expiry flag |
+| **1 Soft** | Expiry morning before cutoff (default 12:00 IST) | `FO_EXPIRY_DAY_DE_RISK` (0.5× size); options `expiry_caution` amber badge; defensive posture |
+| **2 Hard** | After cutoff or legacy full-day block | Futures `expiry_day_safety`; options regime gate — *no new entries* |
+
+**Not yet implemented**: portfolio net-gamma limits. Greeks in `app/greeks.py` support IC proposals and research; gating is **calendar + VIX proxy**, not live gamma aggregation.
 
 **Current strength**: `app/market_calendar.py` already has excellent 2026 NSE F&O holiday handling and safe-window logic. Extend it for the revised Tuesday/Thursday schedules.
 

@@ -1,10 +1,10 @@
-# Strategy Configuration for NiftyFuturesAlgo
+# Strategy Configuration for Aegis
 # This file allows clean external configuration of the trading strategy.
 
 # Paper / Live Trading Parameters
 paper_trading:
   session_start: "09:45"
-  session_end: "15:10"
+  session_end: "15:40"
   
   # Breakout settings
   use_atr_breakout: true
@@ -28,11 +28,22 @@ paper_trading:
   max_trades_per_day: 3
   cooldown_minutes_after_trade: 12
 
-  # Safety
+  # Safety — expiry / gamma caution (calendar cutoff, not live portfolio gamma)
+  # Level 1 (soft): expiry morning before cutoff — FO_EXPIRY_DAY_DE_RISK halves size (see indian_fo_rules.json)
+  # Level 2 (hard): hour >= cutoff on expiry day — block new futures entries (expiry_day_safety)
   avoid_expiry_day: true
-  expiry_day_cutoff_hour: 12
+  expiry_day_cutoff_hour: 12   # IST hour inclusive; 12:00+ blocked on NIFTY Tue / BANKNIFTY monthly Tue / etc.
 
   use_trend_filter: false
+
+# Manual Options Sheet → futures algo integration
+# Your sheet is analysis input; algo reads CE/PE bias before entering futures.
+# Modes: off | advisory (log only) | filter (block opposing side) | confirm (require alignment)
+external_signals:
+  enabled: true
+  mode: filter
+  block_on_mismatch: true
+  allow_when_empty: true
 
 # Risk Parameters (overrides defaults in RiskGatekeeper if needed)
 risk:
@@ -42,6 +53,81 @@ risk:
   risk_per_trade_pct: 0.0035
   lot_size: 65
   max_lots: 4
+
+# Per-index overrides (merged on top of paper_trading above).
+# Quant rationale:
+#   BANKNIFTY — higher index level + 30-lot tick value (~2x Nifty notional/step);
+#               needs higher min_atr and slightly wider stops; fewer trades (whippy).
+#   SENSEX    — BFO session liquidity ramps slower than NFO; later start / earlier end;
+#               wider ATR bands; 20-lot size still large in rupee terms.
+symbols:
+  NIFTY:
+    lot_size: 65
+    min_atr_points: 6.0
+    breakout_atr_mult: 0.78
+    stop_loss_atr_mult: 1.1
+    profit_target_atr_mult: 2.1
+    max_trades_per_day: 3
+    session_start: "09:45"
+    session_end: "15:10"
+
+  BANKNIFTY:
+    lot_size: 30
+    # Higher tick value → filter out low-vol chop; BankNifty ATR typically ~2x Nifty points
+    min_atr_points: 12.0
+    breakout_atr_mult: 0.72
+    stop_loss_atr_mult: 1.15
+    profit_target_atr_mult: 2.0
+    max_trades_per_day: 2
+    session_start: "09:45"
+    session_end: "15:10"
+
+  SENSEX:
+    lot_size: 20
+    # BFO: thinner opening liquidity — delay entries; earlier cutoff before close auction
+    min_atr_points: 18.0
+    breakout_atr_mult: 0.80
+    stop_loss_atr_mult: 1.2
+    profit_target_atr_mult: 2.2
+    max_trades_per_day: 2
+    session_start: "09:55"
+    session_end: "15:00"
+
+# Options execution (Iron Condor v1.0 — paper first)
+# Requires OPTIONS_TRADING_ENABLED=true in .env in addition to trading_enabled here.
+options:
+  trading_enabled: false
+  futures_trading_enabled: false
+  underlying: NIFTY
+  allowed_structures:
+    - iron_condor
+  product: NRML
+  max_structures_per_day: 1
+  max_structure_loss: 100000
+  max_margin_pct_of_capital: 0.15
+  evaluation_interval_sec: 300
+  default_iv: 0.16
+  iv_floor: 0.12
+  iv_cap: 0.35
+  regime_gates:
+    max_vix: 22.0              # Hard block new IC if India VIX above (independent of expiry)
+    min_vix: 10.0              # Hard block if vol too low
+    # Expiry gamma caution — calendar cutoff mirrors futures paper_trading (docs/EXPIRY_GAMMA_CAUTION.md)
+    # false (recommended): Level 1 morning window OK; Level 2 after cutoff_hour
+    # true (legacy): Level 2 all day — blocks every new IC on expiry
+    block_expiry_day_entries: false
+    expiry_day_entry_cutoff_hour: 12   # IST; Nifty weekly Tuesday — no new IC from 12:00; exits still run
+    # Optional BS gamma + ATM OI proxy (hard-blocks when threshold breached on expiry day)
+    enable_gamma_proxy: false
+    gamma_proxy_hard_threshold: 0.00035
+    # gamma_proxy_soft_threshold: null
+    # gamma_proxy_oi_threshold: 8000000
+  session_end: "15:00"
+  iron_condor:
+    wing_width: null
+    body_width: null
+    exit_profit_pct: 0.50
+    exit_loss_pct: 1.0
 
 # Backtesting / Validation defaults
 backtest:

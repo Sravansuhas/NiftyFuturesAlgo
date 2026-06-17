@@ -1,4 +1,4 @@
-# NiftyFuturesAlgo — Backtesting Documentation
+# Aegis — Backtesting Documentation
 
 **Professional Walk-Forward Analysis & Regime-Aware Validation Framework**
 
@@ -179,7 +179,7 @@ Repeated Kite calls are slow and quota-expensive. The system **always prefers** 
 - Explicit logging: `FULL CACHE HIT`, `smart_cache_or_kite`, etc.
 
 ### Available Cached Datasets Panel (GUI)
-In the Algo Lab → Presets & Data tab, you can see exactly what local data you have, with date ranges, row counts, and file sizes.
+In the Aegis → Presets & Data tab, you can see exactly what local data you have, with date ranges, row counts, and file sizes.
 
 ---
 
@@ -364,7 +364,7 @@ PYTHONPATH=. python run.py
 - You will see calm startup logs (we removed the noisy banners).
 - It will say something like:
   ```
-  [RUNNER] NiftyFuturesAlgo starting at ...
+  [RUNNER] Aegis starting at ...
   [RISK] Gatekeeper ready...
   [MAIN] Paper trading engine initialized...
   [RUNNER] Ready. Dashboard: http://localhost:8050
@@ -375,7 +375,7 @@ PYTHONPATH=. python run.py
 
 You will see two main pages:
 - **Main Terminal view** (`/`) – live risk, position, P&L, market status rail.
-- **Algo Lab / Backtest** (`/backtest`) – for validation (you probably won't need this in the morning).
+- **Aegis / Backtest** (`/backtest`) – for validation (you probably won't need this in the morning).
 
 **Step 4: Quick Morning Safety Checks (in the Dashboard)**
 - Confirm the top market rail shows **OPEN** + safe trading window (green/amber pill).
@@ -387,7 +387,7 @@ You will see two main pages:
 - The terminal will show important events at INFO level only.
 - Most rejections and diagnostics are now at DEBUG (quiet terminal).
 - Use the dashboard for live detailed view (much richer than terminal).
-- If you ever want to stop a long backtest/validation job: Use the red **"STOP / CANCEL"** button in the Algo Lab.
+- If you ever want to stop a long backtest/validation job: Use the red **"STOP / CANCEL"** button in the Aegis.
 
 **Step 6: Graceful Shutdown at End of Day**
 - In the terminal where `run.py` is running, press **Ctrl + C**.

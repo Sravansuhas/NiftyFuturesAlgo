@@ -1,4 +1,4 @@
-# Agents & Skills — How We Build & Evolve NiftyFuturesAlgo
+# Aegis — Agents & Skills — How We Build & Evolve
 
 **Purpose**: Explain how the project will use Grok Build's latest capabilities (skills, subagents, personas, plan-mode, bundled loops, MCP) as the primary "easy to build and deploy" mechanism. This is both documentation and a contributor/founder operating manual.
 

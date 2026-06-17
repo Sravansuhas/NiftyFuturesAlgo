@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from kiteconnect import KiteConnect
 
 from .audit_logger import audit_logger
+from .order_tags import DEFAULT_ALGO_TAG, resolve_order_tag
 from .state_machine import SystemState, state_machine
 from .alerts import alert_manager
 
@@ -174,7 +175,7 @@ class RiskGatekeeper:
                             order_type: str = "MARKET", product: str = "MIS",
                             validity: str = "DAY", dry_run: bool = None,
                             is_exit: bool = False, force_dry_run: bool = False,
-                            tag: str = "NFALGO", market_protection: int = -1,
+                            tag: str = DEFAULT_ALGO_TAG, market_protection: int = -1,
                             autoslice: bool = True, exchange: str = None,
                             protective_stop: float = None,
                             index_key: str = None,
@@ -201,11 +202,15 @@ class RiskGatekeeper:
             return self._blocked("Order blocked by risk gates", symbol, quantity, transaction_type)
 
         if dry_run:
-            position_updated = self.on_order_placed(symbol, quantity, transaction_type, price, is_exit=is_exit)
-            if not position_updated:
-                return self._blocked("Dry run rejected by position accounting", symbol, quantity, transaction_type)
+            if multi_symbol_entry:
+                # Multi-leg options are tracked in options_position_store, not single-symbol futures state.
+                position_updated = True
+            else:
+                position_updated = self.on_order_placed(symbol, quantity, transaction_type, price, is_exit=is_exit)
+                if not position_updated:
+                    return self._blocked("Dry run rejected by position accounting", symbol, quantity, transaction_type)
 
-            if not is_exit:
+            if not is_exit and not multi_symbol_entry:
                 self.trades_today += 1
             audit_logger.record("order.dry_run", {
                 "symbol": symbol,
@@ -223,10 +228,18 @@ class RiskGatekeeper:
             }
 
         order_exchange = exchange or self.resolve_exchange(symbol)
+        resolved_tag = resolve_order_tag(None if tag == DEFAULT_ALGO_TAG else tag)
 
         try:
-            from .kite_rate_limit import order_limiter
+            from .kite_rate_limit import order_burst_tracker, order_limiter
 
+            allowed, burst_count = order_burst_tracker.try_acquire()
+            if not allowed:
+                return self._blocked(
+                    f"Order rate limit: {burst_count} orders in last 10s "
+                    f"(max {order_burst_tracker.max_per_10s})",
+                    symbol, quantity, transaction_type,
+                )
             order_limiter.wait()
             order_id = kite.place_order(
                 variety="regular",
@@ -239,7 +252,7 @@ class RiskGatekeeper:
                 price=price if order_type.upper() == "LIMIT" else 0,
                 validity=validity,
                 market_protection=market_protection,
-                tag=tag[:20],
+                tag=resolved_tag,
             )
 
             if order_id:
@@ -252,7 +265,7 @@ class RiskGatekeeper:
                     "is_exit": is_exit,
                     "placed_at": time.time(),
                     "exchange": order_exchange,
-                    "tag": tag[:20],
+                    "tag": resolved_tag,
                     "index_key": (index_key or _normalize_index_key(symbol)).upper(),
                 }
                 if protective_stop is not None:
@@ -265,6 +278,7 @@ class RiskGatekeeper:
                     "quantity": quantity,
                     "transaction_type": transaction_type.upper(),
                     "is_exit": is_exit,
+                    "tag": resolved_tag,
                 })
                 logger.debug(f"[{mode}] Order submitted -> ID: {order_id}")
                 return {

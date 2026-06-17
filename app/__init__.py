@@ -1,5 +1,5 @@
 """
-NiftyFuturesAlgo - Deterministic, risk-first algorithmic trading system for Nifty Futures.
+Aegis — Deterministic, risk-first algorithmic trading platform for Indian index F&O.
 
 Phase 1+2 complete infrastructure: state machine, risk gatekeeper, reconciliation,
 market calendar, audit, token mgmt, previous-candle breakout strategy (live + backtest),

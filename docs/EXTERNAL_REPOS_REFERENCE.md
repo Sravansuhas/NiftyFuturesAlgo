@@ -1,8 +1,8 @@
-# External Repos Reference
+# Aegis — External Repos Reference
 
-**Purpose**: Track adjacent open-source / co-founder trading repos worth revisiting when building NiftyFuturesAlgo. Not dependencies — reference material only.
+**Purpose**: Track adjacent open-source / co-founder trading repos worth revisiting when building Aegis. Not dependencies — reference material only.
 
-**Last reviewed**: 2026-06-11 (added Python-for-Indian-Traders)
+**Last reviewed**: 2026-06-15 (added market-dna-engine)
 
 ---
 
@@ -24,8 +24,12 @@
 | Phase 1 — Kite auth pattern | [tradewin](#5-tradewin-hsatam) `KiteClient.py` (compare with `app/kite_auth.py`) |
 | Phase 2 — F&O instrument alias model (spot + FUT + CE chain) | [zerodha-algo-trading](#6-zerodha-algo-trading-anandaanv) `FUT1/FUT2`, `CE1/CE2/CE3` screener aliases |
 | Phase 2 — Deterministic + Vision two-stage gating | [zerodha-algo-trading](#6-zerodha-algo-trading-anandaanv) Kotlin screener → chart PNG → OpenAI Vision |
-| Phase 2 — Charting / Algo Lab UX | [zerodha-algo-trading](#6-zerodha-algo-trading-anandaanv) TradingView Lightweight Charts + multi-panel studies |
+| Phase 2 — Charting / Aegis UX | [zerodha-algo-trading](#6-zerodha-algo-trading-anandaanv) TradingView Lightweight Charts + multi-panel studies |
 | Phase 1 — Kite OAuth admin / multi-user token mgmt | [zerodha-algo-trading](#6-zerodha-algo-trading-anandaanv) JWT + `/api/admin/kite-configs/` (compare with `app/kite_auth.py`) |
+| Phase 2 — **Session DNA / conditional stats** (gap, PDH/PDL, ORB, DTE) | [market-dna-engine](#9-market-dna-engine-milesbusiness) `market_dna.py`, `RESEARCH_FINDINGS.md` |
+| Phase 2 — Morning brief regime tags (VIX floor, open bias, expiry context) | [market-dna-engine](#9-market-dna-engine-milesbusiness) → enrich `app/market_context.py`, `fo-market-brief` skill |
+| Phase 2 — ORB / gap-fill **candidate** strategies (research only) | [market-dna-engine](#9-market-dna-engine-milesbusiness) `backtest_app/engine.py` → `strategy_candidates.json` + WFO |
+| Phase 2 — FO rules proposals from published edges | [market-dna-engine](#9-market-dna-engine-milesbusiness) → `fo-failure-pattern-miner` / `indian_fo_rules.json` proposals |
 
 **Invariant**: Any code borrowed must route through `RiskGatekeeper`, pass WFA + cost model + statistical power gates, and never bypass reconciliation.
 
@@ -65,7 +69,7 @@ oi_tracker/
 └── strategies/rr_engine.py     # MC/MOM/VWAP signals + regime classification
 ```
 
-### Relevance to NiftyFuturesAlgo
+### Relevance to Aegis
 
 | Area | Relevance | Notes |
 |------|-----------|-------|
@@ -141,7 +145,7 @@ AI-trader/
 └── database/schema.sql               # TimescaleDB hypertables for ticks/candles
 ```
 
-### Relevance to NiftyFuturesAlgo
+### Relevance to Aegis
 
 | Area | Relevance | Notes |
 |------|-----------|-------|
@@ -151,7 +155,7 @@ AI-trader/
 | RL exit agent (trade-relative state) | **Medium** | Interesting for options overlay exits; needs rigorous validation |
 | Tick-level replay backtest | **Medium** | Superior to bar-approximated exits; heavy infra (TimescaleDB + ticks) |
 | Regime detector + strategy gating | **Medium** | Similar concept to `get_market_regime()` — different features |
-| Dashboard UX (trade journey charts) | **Medium** | Good ideas for Algo Lab dashboard |
+| Dashboard UX (trade journey charts) | **Medium** | Good ideas for Aegis dashboard |
 | TrueData integration | **Low** | We standardize on Kite; patterns transferable, not the vendor |
 | Broker execution / reconciliation | **Caution** | No RiskGatekeeper, no broker reconciliation — research-grade only |
 
@@ -210,7 +214,7 @@ Automate-Stock-Trading/
 └── docs/DHAN_API_v2_COMPLETE_REFERENCE.md  # Dhan broker API reference (39KB)
 ```
 
-### Relevance to NiftyFuturesAlgo
+### Relevance to Aegis
 
 | Area | Relevance | Notes |
 |------|-----------|-------|
@@ -278,7 +282,7 @@ ai-hedge-fund/
 └── app/frontend/src/components/Flow.tsx # Visual agent pipeline editor
 ```
 
-### Relevance to NiftyFuturesAlgo
+### Relevance to Aegis
 
 | Area | Relevance | Notes |
 |------|-----------|-------|
@@ -315,7 +319,7 @@ Our project is **deterministic + risk-first**. This repo is **LLM-opinion-first*
 
 ### What It Does
 
-The **most directly comparable** repo to NiftyFuturesAlgo — same broker, same asset class (index futures), intraday MIS.
+The **most directly comparable** repo to Aegis — same broker, same asset class (index futures), intraday MIS.
 
 ```
 Kite historical_data (5min) → indicators (ATR, EMA, RSI, VWAP)
@@ -352,7 +356,7 @@ tradewin/
 └── nifty_bank_5min_15yr.csv       # 15yr BankNifty 5-min dataset
 ```
 
-### Relevance to NiftyFuturesAlgo
+### Relevance to Aegis
 
 | Area | Relevance | Notes |
 |------|-----------|-------|
@@ -369,7 +373,7 @@ tradewin/
 
 ### Overlap vs Our Project
 
-| | tradewin | NiftyFuturesAlgo |
+| | tradewin | Aegis |
 |--|----------|------------------|
 | **Symbol** | BANKNIFTY only | NIFTY + BANKNIFTY + SENSEX (Phase 0) |
 | **Strategy** | ORB + VWAP reversion (adaptive) | Previous-candle ATR breakout + regime |
@@ -433,14 +437,14 @@ zerodha-algo-trading/
 └── ds-python/finrl-poc/                    # FinRL proof-of-concept (Python)
 ```
 
-### Relevance to NiftyFuturesAlgo
+### Relevance to Aegis
 
 | Area | Relevance | Notes |
 |------|-----------|-------|
 | F&O alias notation (FUT1, CE1 chain) | **High** | Clean pattern for cross-instrument screeners — compare with `instruments_manager.py` |
 | Two-stage gating (code → Vision) | **Medium** | Interesting Phase 2 pattern: deterministic signal first, LLM as veto/confirm only |
 | Kite historical sync + MySQL schema | **Medium** | Reference for batch candle/OI warehouse if we outgrow parquet cache |
-| TradingView chart UX | **Medium** | Algo Lab dashboard — multi-timeframe panels, study overlays |
+| TradingView chart UX | **Medium** | Aegis dashboard — multi-timeframe panels, study overlays |
 | Cross-segment screening (spot + fut + opt) | **Medium** | Phase 2+ regime intelligence; aligns with deferred options overlay |
 | Elliott wave / pattern docs | **Low** | Heavy TA research; needs WFA before any gatekeeper use |
 | FinRL POC | **Low** | Reinforcement learning ≠ our risk-first deterministic core |
@@ -458,7 +462,7 @@ zerodha-algo-trading/
 | **Stack** | Java/Kotlin + React | Python | Python |
 | **Best for us** | Alias model, Vision gating UX | **Phase 0 BN strategy** | Phase 1 WS + OI |
 
-**Medium relevance** — strongest on **instrument modeling** and **screening UX**, not on intraday futures execution. Revisit when building Phase 2 cross-segment intelligence or Algo Lab charting. Do **not** prioritize over tradewin for Phase 0.
+**Medium relevance** — strongest on **instrument modeling** and **screening UX**, not on intraday futures execution. Revisit when building Phase 2 cross-segment intelligence or Aegis charting. Do **not** prioritize over tradewin for Phase 0.
 
 ---
 
@@ -511,7 +515,7 @@ Indian touches exist but are superficial:
 
 No Kite Connect, no instrument master sync, no algo strategy loop, no reconciliation.
 
-### Relevance to NiftyFuturesAlgo
+### Relevance to Aegis
 
 | Area | Relevance | Notes |
 |------|-----------|-------|
@@ -587,7 +591,7 @@ Python-for-Indian-Traders/
 └── trade_forensics_lite/       # Behavioral tracking stubs (mistake, emotion tags)
 ```
 
-### Relevance to NiftyFuturesAlgo
+### Relevance to Aegis
 
 | Area | Relevance | Notes |
 |------|-----------|-------|
@@ -616,31 +620,127 @@ No F&O mechanics, no validation oracle, no execution path. The `trade_forensics_
 
 ---
 
-## 9. Comparison Table
+## 9. market-dna-engine (milesbusiness)
 
-| Dimension | NiftyFuturesAlgo | **tradewin** | zerodha-algo | oi_tracker | AI-trader | Trade Code Lab | StockFlow | StockPulse | ai-hedge-fund |
-|-----------|------------------|--------------|--------------|------------|-----------|----------------|-----------|------------|---------------|
-| **Instrument** | Index **futures** | **BANKNIFTY futures** | Equity + F&O screen | NIFTY options | NIFTY options | RELIANCE equity | Generic equities | NSE equities | US equities |
-| **Signal** | ATR breakout + regime | ORB + VWAP adaptive | Kotlin DSL + Vision | OI + Claude | XGBoost + rules | VWAP+EMA print | **None** | AI brief | LLM agents |
-| **Data feed** | Kite REST | Kite REST + 15yr CSV | Kite sync → MySQL | Kite REST + WS | TrueData | Kite REST (1 stock) | **None** | Angel One + NSE | Fin Datasets |
-| **Validation** | WFA + MC + costs | Bar backtest + grid tune | Vision confirm only | Strategy BT | Walk-forward ML | Fake BT stub | **None** | None | LLM daily BT |
-| **Risk** | **RiskGatekeeper** | Daily loss + cooldown | None (manual) | Per-strategy + GTT | Risk profiles | 1-line check | Schema only | None | Vol/corr → LLM |
-| **Trading** | Futures paper/live | **BN futures live** | Manual only | Options live | Options paper | Telegram alert only | **Not built** | No trading | No trading |
-| **Best borrow** | — (our core) | **BN strategy, data, filters** | F&O aliases, chart UX | WS, OI, GTT | ML, tick BT | **Skip** | **Skip** | NSE macro | Orchestration |
+| Field | Value |
+|-------|-------|
+| **URL** | https://github.com/milesbusiness/market-dna-engine |
+| **Focus** | Statistical **Market DNA** for NIFTY 50 + Bank Nifty — conditional probabilities before indicators |
+| **Stack** | Python, pandas, DuckDB, pyarrow, Flask backtest UI, yfinance gap-fill |
+| **Data source** | Local parquet **TradeStore** (`E:\TradeStore`) — index minute bars, India VIX; **not in repo** |
+| **Maturity** | ~3 commits (initial release 2026-06-14); MIT; strong README + `RESEARCH_FINDINGS.md` |
 
-| Dimension | NiftyFuturesAlgo | **tradewin** | zerodha-algo | oi_tracker | AI-trader | StockPulse | ai-hedge-fund |
-|-----------|------------------|--------------|--------------|------------|-----------|------------|---------------|
-| **Instrument** | Index **futures** | **BANKNIFTY futures** | Equity + F&O screen | NIFTY options | NIFTY options | NSE equities | US equities |
-| **Signal** | ATR breakout + regime | ORB + VWAP adaptive | Kotlin DSL + Vision | OI + Claude | XGBoost + rules | AI brief | LLM agents |
-| **Data feed** | Kite REST | Kite REST + 15yr CSV | Kite sync → MySQL | Kite REST + WS | TrueData | Angel One + NSE | Fin Datasets |
-| **Validation** | WFA + MC + costs | Bar backtest + grid tune | Vision confirm only | Strategy BT | Walk-forward ML | None | LLM daily BT |
-| **Risk** | **RiskGatekeeper** | Daily loss + cooldown | None (manual) | Per-strategy + GTT | Risk profiles | None | Vol/corr → LLM |
-| **Trading** | Futures paper/live | **BN futures live** | Manual only | Options live | Options paper | No trading | No trading |
-| **Best borrow** | — (our core) | **BN strategy, data, filters** | F&O aliases, chart UX | WS, OI, GTT | ML, tick BT | NSE macro | Orchestration |
+### What It Does
+
+Research platform that tags every trading day (~35 fields) and stores queryable stats in DuckDB:
+
+```
+Local minute bars (index spot)
+    → market_dna.py
+        ├── build_daily_dna()       — gap type/size, fill/continuation
+        ├── pdh_pdl_statistics()    — 5-stage institutional sweep detection
+        ├── orb_statistics()        — 9:15–9:45 ORB direction + range buckets
+        ├── session_statistics()    — half-hour green-rate bias
+        ├── expiry_statistics()       — DTE-tagged range / gap-fill behavior
+        ├── add_adx_regime()          — choppy / ranging / trending
+        └── edge_scanner()            — exhaustive 2-condition combo search
+    → market_dna.duckdb
+    → backtest_app/ (ORB-30, gap-fill swing, monthly bias — points P&L UI)
+```
+
+Published findings (NIFTY 2015–2022, 1,965 days) — treat as **hypotheses**, not promotion gates:
+
+| Edge | Stat | Caveat |
+|------|------|--------|
+| Gap up + PDH **not** swept early → gap fills | **71.7%** (n=53) | Small sample; index spot only |
+| ORB shorts share of backtest profit | **88%** | Points, no Indian F&O costs |
+| 9:15–9:30 session closes red | **55.4%** | Session filter, not standalone edge |
+| Gap-fill mean reversion needs VIX > 13 | Low VIX fill ~13% | Aligns with our VIX zone logic |
+| Near-expiry (DTE 0–3) avg range | +40–60% vs normal | Risk sizing / filter input |
+
+ORB backtest (filtered, 609 trades): WR 51.6%, PF 1.20, +2,687 **pts** — no brokerage, slippage, or futures basis.
+
+### Key Modules to Study
+
+```
+market-dna-engine/
+├── market_dna.py              # DNA tagger + DuckDB + edge_scanner CLI
+├── RESEARCH_FINDINGS.md       # Pre-computed conditional stats (2015–2022)
+├── backtest_app/
+│   ├── engine.py              # ORB-30 (8 filters), gap-fill, position bias
+│   ├── server.py              # Flask API
+│   └── static/index.html      # TradingView + trade reasoning UI
+├── fetch_nifty_yfinance.py    # Index gap extension via yfinance
+└── docs/                      # Architecture + dev guides (added 2026-06-14)
+```
+
+### Relevance to Aegis
+
+| Area | Relevance | Notes |
+|------|-----------|-------|
+| Conditional session stats (gap/PDH/ORB/DTE) | **High** | Complements `app/market_context.py` — deeper intraday structure than VIX/FII alone |
+| VIX floor for mean-reversion gates | **High** | "No gap-fill edge when VIX < 13" → morning brief + regime veto proposals |
+| ORB short bias + Tuesday skip + ORB range filters | **Medium** | Overlaps tradewin ORB; use as **filter layer**, not replacement for breakout core |
+| DuckDB daily-tag store | **Medium** | Offline research on `data/historical_cache` — query layer separate from Postgres |
+| `backtest_app` trade reasoning UX | **Medium** | `entry_reason` / `lesson` per trade — pattern for Insights / journal enrichment |
+| `edge_scanner` combo search | **Low–Medium** | Useful R&D; watch multiple-comparison bias — holdout required |
+| Live execution / broker / risk | **None** | No Kite, RiskGatekeeper, reconciliation, or SEBI tagging |
+| Futures roll + Zerodha cost model | **None** | Index spot minutes; must re-validate on NFO/BFO via `run_promotion_wfo.py` |
+
+### vs Aegis `market_context.py`
+
+| | market-dna-engine | Aegis today |
+|--|-------------------|-------------|
+| **Scope** | Historical conditional stats + offline tags | Live VIX, FII/DII, open-bias hints |
+| **Intraday structure** | PDH/PDL sweeps, ORB buckets, session green rates | Partial (open bias only) |
+| **Expiry context** | DTE-tagged range / gap-fill tables | Calendar-aware, not DNA-tagged |
+| **Validation** | In-sample stats + point backtest | WFO @ 1x/2x costs on **futures** |
+| **Live path** | None | Paper/live via RiskGatekeeper |
+
+**Complementary, not competitive** — DNA answers *when* regimes favor certain behaviors; Aegis answers *whether our futures strategy survives costs*.
+
+### Planned Integrations (borrow later — not implemented)
+
+Priority order for a future sprint:
+
+1. **`scripts/build_market_dna.py`** (new) — Read Aegis `data/historical_cache` parquet (not `E:\TradeStore`); emit daily DNA rows to `data/market_dna/` or DuckDB. Reuse tag logic concepts from `build_daily_dna()`, `pdh_pdl_statistics()`, `orb_statistics()` — port, do not vendor the hardcoded `STORE` path.
+
+2. **`app/market_context.py` enrichment** — After 9:45 IST, attach runtime tags: `gap_bucket`, `pdh_swept`, `orb_range_pts`, `dte`, `vix_zone`. Feed `fo-market-brief` skill and `/ui/insights` regime cards. Fail gracefully (same invariant as VIX fetch).
+
+3. **`indian_fo_rules.json` proposals** — Human-gated encodings, e.g.:
+   - `vix_min_for_gap_fade: 13`
+   - `orb_short_bias_on_wed_thu: true`
+   - `suppress_mean_reversion_dte3_gap_down: true` (from DTE 3 gap-down fill suppression stat)
+   - Route through `fo-failure-pattern-miner` — never auto-apply.
+
+4. **Strategy candidates** — ORB-short-bias intraday or gap-fill-fade as entries in `data/strategy_candidates.json`; mandatory `run_promotion_wfo.py --cost-multiplier 2.0` on **rolled futures** before any paper enable.
+
+5. **Insights / journal UX** — Borrow per-trade `entry_reason` / `lesson` pattern from `backtest_app/engine.py` for agent-generated session notes (display only).
+
+### Do Not Merge Now
+
+- Do **not** wire DNA conditional edges directly into live entries — index spot stats ≠ NFO futures after basis + 2× costs.
+- Do **not** treat PF 1.20 / 71% fill headlines as promotion passes — small-n cells and data cutoff at **2022**.
+- Do **not** adopt `edge_scanner` output without holdout / WFO — exhaustive 2-way combos inflate false discovery.
+- Refresh stats on 2023–2026 cache before encoding any rule.
+
+---
+
+## 10. Comparison Table
+
+| Dimension | Aegis | **market-dna** | **tradewin** | zerodha-algo | oi_tracker | AI-trader | StockPulse | ai-hedge-fund |
+|-----------|------------------|----------------|--------------|--------------|------------|-----------|------------|---------------|
+| **Instrument** | Index **futures** | Index **spot** (NIFTY/BN) | **BANKNIFTY futures** | Equity + F&O screen | NIFTY options | NIFTY options | NSE equities | US equities |
+| **Signal** | ATR breakout + regime | Conditional stats → ORB/gap | ORB + VWAP adaptive | Kotlin DSL + Vision | OI + Claude | XGBoost + rules | AI brief | LLM agents |
+| **Data feed** | Kite REST | Local parquet TradeStore | Kite REST + 15yr CSV | Kite sync → MySQL | Kite REST + WS | TrueData | Angel One + NSE | Fin Datasets |
+| **Validation** | WFA + MC + costs | In-sample stats + pt BT | Bar backtest + grid tune | Vision confirm only | Strategy BT | Walk-forward ML | None | LLM daily BT |
+| **Risk** | **RiskGatekeeper** | None (research) | Daily loss + cooldown | None (manual) | Per-strategy + GTT | Risk profiles | None | Vol/corr → LLM |
+| **Trading** | Futures paper/live | None | **BN futures live** | Manual only | Options live | Options paper | No trading | No trading |
+| **Best borrow** | — (our core) | **Session DNA, regime filters** | **BN strategy, data, filters** | F&O aliases, chart UX | WS, OI, GTT | ML, tick BT | NSE macro | Orchestration |
 
 ```mermaid
 flowchart TB
-    subgraph NFA["NiftyFuturesAlgo (us)"]
+    subgraph AEGIS["Aegis (us)"]
         F1[Futures breakout] --> F2[RiskGatekeeper]
         F2 --> F3[WFA validation]
     end
@@ -664,18 +764,25 @@ flowchart TB
     subgraph ZAT["zerodha-algo-trading"]
         Z1[Kotlin screener + F&O aliases] --> Z2[Vision chart confirm]
     end
+    subgraph MDNA["market-dna-engine"]
+        M1[Daily DNA tags] --> M2[DuckDB conditional stats]
+        M2 --> M3[ORB/gap research BT]
+    end
     T1 -.->|Phase 0/1: BN filters| F1
     Z1 -.->|Phase 2: alias model + gating UX| F1
+    M2 -.->|Phase 2: regime/session filters| F1
+    M1 -.->|enrich market_context| S1
     O1 -.->|Phase 2: bias filter| F1
     A1 -.->|Phase 2: ML gating| F1
     S1 -.->|fo-market-brief skill| F1
     H1 -.->|orchestration pattern only| F1
+    M3 -.->|candidates → WFO only| F3
     O3 -.->|Phase 3: options exec| F2
 ```
 
 ---
 
-## 10. Borrowing Checklist
+## 11. Borrowing Checklist
 
 Before porting any pattern from these repos:
 
@@ -690,7 +797,7 @@ Before porting any pattern from these repos:
 
 ---
 
-## 11. Review Log
+## 12. Review Log
 
 | Date | Repo | Action |
 |------|------|--------|
@@ -700,7 +807,8 @@ Before porting any pattern from these repos:
 | 2026-06-11 | ai-hedge-fund | Initial review — LangGraph orchestration + risk math + Flow UI noted; **LLM-as-trader rejected** for our core |
 | 2026-06-11 | tradewin | Initial review — **highest BN futures overlap**; ORB/VWAP, reentry filters, 15yr CSV noted for Phase 0/1 |
 | 2026-06-11 | zerodha-algo-trading | Initial review — **not live trading** despite name; F&O alias model, Kotlin→Vision gating, chart UX noted for Phase 2; execution deferred |
-| 2026-06-11 | stock-trading-Platform | Deep review — **README/schema theater**; 15 commits, empty stubs; Prisma brokerage model only; **no borrow priority** for NiftyFuturesAlgo |
+| 2026-06-11 | stock-trading-Platform | Deep review — **README/schema theater**; 15 commits, empty stubs; Prisma brokerage model only; **no borrow priority** for Aegis |
 | 2026-06-11 | Python-for-Indian-Traders | Initial review — **honest educational stub**; only `Full Code/VWAP EMA.py` is real; equity-only; forensics naming noted for failure-miner skill; **skip for Phase 0** |
+| 2026-06-15 | market-dna-engine | Initial review — **stats-before-indicators** research platform; session DNA (gap/PDH/ORB/DTE/VIX) noted for `market_context` + FO rules proposals; ORB/gap candidates → WFO only; **no live borrow** |
 
 **Next review trigger**: When Phase 0 closes — compare `tradewin/strategy.py` + `entry_filters.py` with `app/strategy.py` + `breakout_core.py` for BankNifty parameter seeding.

@@ -22,6 +22,12 @@ class MicroLiveTests(unittest.TestCase):
     def setUp(self):
         state_machine.set_state(SystemState.PAPER_MODE)
         self.mgr = MultiSymbolRiskManager(capital=1_000_000.0)
+        self._fo_patcher = patch.object(
+            self.mgr,
+            "check_fo_rules",
+            return_value=(True, "test_ok", 1.0),
+        )
+        self._fo_patcher.start()
         self.enabled_config = MicroLiveConfig(
             enabled=True,
             max_lots=1,
@@ -29,6 +35,9 @@ class MicroLiveTests(unittest.TestCase):
             allowed_symbols=("NIFTY",),
             require_promotion=True,
         )
+
+    def tearDown(self):
+        self._fo_patcher.stop()
 
     def test_requires_double_confirmation(self):
         env = {
@@ -63,8 +72,9 @@ class MicroLiveTests(unittest.TestCase):
                         self.assertTrue(ready["ready"])
 
     def test_caps_quantity_to_one_lot(self):
-        capped = cap_order_quantity("NIFTY", 300, 75, 0, self.enabled_config)
-        self.assertEqual(capped, 75)
+        lot_size = self.mgr._get_lot_size("NIFTY")
+        capped = cap_order_quantity("NIFTY", 300, lot_size, 0, self.enabled_config)
+        self.assertEqual(capped, lot_size)
 
         self.mgr.set_micro_live_config(self.enabled_config)
         result = self.mgr.place_guarded_order(

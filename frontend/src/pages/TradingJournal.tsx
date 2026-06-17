@@ -75,11 +75,10 @@ export default function TradingJournal() {
   const hints = overnight?.session_hints as Record<string, unknown> | undefined;
 
   const dateActions = (
-    <>
+    <div className="page-shell-toolbar">
       <input
         type="date"
         className="input-field input-field--compact"
-        style={{ width: 'auto' }}
         value={selectedDate}
         onChange={(e) => setSelectedDate(e.target.value)}
         list="journal-dates"
@@ -94,7 +93,7 @@ export default function TradingJournal() {
       <button type="button" className="btn btn-secondary" onClick={handleRebuild}>
         <RefreshCw size={14} /> Rebuild
       </button>
-    </>
+    </div>
   );
 
   return (
@@ -105,20 +104,20 @@ export default function TradingJournal() {
     >
       <div className="bento-grid w-full">
         {error && (
-          <div className="bento-tile bento-tile--accent-brand text-loss" style={{ gridColumn: 'span 12' }}>
+          <div className="bento-tile bento-tile--auto bento-tile--accent-brand text-loss journal-col-12">
             {error}
           </div>
         )}
 
         {loading && (
-          <div className="bento-tile" style={{ gridColumn: 'span 12' }}>
+          <div className="bento-tile bento-tile--auto journal-col-12">
             <EmptyState title="Loading journal…" />
           </div>
         )}
 
         {journal && !loading && (
           <>
-            <div className="bento-tile" style={{ gridColumn: 'span 4' }}>
+            <div className="bento-tile bento-tile--auto journal-col-4">
               <h3 className="tile-eyebrow">Session Score</h3>
               <p className="tile-metric m-0">
                 {summary?.quality_score ?? '—'}
@@ -129,7 +128,7 @@ export default function TradingJournal() {
               </p>
             </div>
 
-            <div className="bento-tile" style={{ gridColumn: 'span 4' }}>
+            <div className="bento-tile bento-tile--auto journal-col-4">
               <h3 className="tile-eyebrow">Macro Context</h3>
               {vix?.available ? (
                 <p className="text-sm my-2">
@@ -153,7 +152,7 @@ export default function TradingJournal() {
               )}
             </div>
 
-            <div className="bento-tile" style={{ gridColumn: 'span 4' }}>
+            <div className="bento-tile bento-tile--auto journal-col-4">
               <h3 className="tile-eyebrow">GIFT Overnight</h3>
               {overnight?.available && niftyOh ? (
                 <>
@@ -175,7 +174,7 @@ export default function TradingJournal() {
               )}
             </div>
 
-            <div className="bento-tile" style={{ gridColumn: 'span 12' }}>
+            <div className="bento-tile bento-tile--auto journal-col-12">
               <h3 className="tile-eyebrow">System Feedback</h3>
               <p className="font-semibold mb-2">{feedback?.headline ?? journal.feedback_summary}</p>
               <ul className="m-0 pl-5 text-sm text-muted leading-relaxed">
@@ -183,7 +182,7 @@ export default function TradingJournal() {
               </ul>
             </div>
 
-            <div className="bento-tile" style={{ gridColumn: 'span 6' }}>
+            <div className="bento-tile bento-tile--auto journal-col-6">
               <h3 className="tile-eyebrow">Improvement Actions</h3>
               <ul className="m-0 pl-5 text-sm leading-relaxed">
                 {(journal.improvement_actions ?? feedback?.actions ?? []).map((a) => (
@@ -192,43 +191,41 @@ export default function TradingJournal() {
               </ul>
             </div>
 
-            <div className="bento-tile" style={{ gridColumn: 'span 6' }}>
+            <div className="bento-tile bento-tile--auto journal-col-6">
               <h3 className="tile-eyebrow">Closed Trades</h3>
               {(journal.trades ?? []).length === 0 ? (
                 <p className="text-muted text-sm m-0">No closed trades recorded.</p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="data-table data-table--dense">
-                    <thead>
-                      <tr>
-                        <th>Symbol</th>
-                        <th>Side</th>
-                        <th>P&L</th>
-                        <th>Reason</th>
+                <table className="data-table data-table--dense journal-trades-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Side</th>
+                      <th>P&L</th>
+                      <th>Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {journal.trades!.map((t, i) => (
+                      <tr key={`${t.symbol}-${i}`}>
+                        <td>{t.symbol}</td>
+                        <td>{t.side}</td>
+                        <td className={(t.realized_pnl ?? 0) >= 0 ? 'text-profit' : 'text-loss'}>
+                          {formatINR(t.realized_pnl ?? 0)}
+                        </td>
+                        <td className="text-muted">{t.exit_reason ?? '—'}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {journal.trades!.map((t, i) => (
-                        <tr key={`${t.symbol}-${i}`}>
-                          <td>{t.symbol}</td>
-                          <td>{t.side}</td>
-                          <td className={(t.realized_pnl ?? 0) >= 0 ? 'text-profit' : 'text-loss'}>
-                            {formatINR(t.realized_pnl ?? 0)}
-                          </td>
-                          <td className="text-muted">{t.exit_reason ?? '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               )}
             </div>
 
-            <div className="bento-tile" style={{ gridColumn: 'span 12' }}>
+            <div className="bento-tile bento-tile--auto journal-col-12">
               <h3 className="tile-eyebrow flex items-center gap-2">
                 <MessageSquarePlus size={14} /> Your Notes
               </h3>
-              <div className="flex gap-2 mb-3">
+              <div className="journal-note-form">
                 <input
                   type="text"
                   className="input-field flex-1"
@@ -260,7 +257,7 @@ export default function TradingJournal() {
         )}
 
         {!journal && !loading && !error && selectedDate && (
-          <div className="bento-tile" style={{ gridColumn: 'span 12' }}>
+          <div className="bento-tile bento-tile--auto journal-col-12">
             <EmptyState
               title={`No journal for ${selectedDate}`}
               message="Click Rebuild to generate from session data, trade ledger, and risk snapshots."

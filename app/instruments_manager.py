@@ -50,17 +50,25 @@ class InstrumentsManager:
         self._last_loaded: Optional[datetime] = None
         self._no_kite_warned = False
 
+    @staticmethod
+    def _access_token(kite) -> str:
+        if kite is None:
+            return ""
+        return str(getattr(kite, "access_token", None) or "")
+
     def bind(self, kite, force: bool = False) -> bool:
         """
         Attach the shared Kite client and load instruments when possible.
         Call this as early as main() creates KiteConnect + TokenManager.
         """
-        changed = self.kite is not kite
+        new_token = self._access_token(kite)
+        old_token = self._access_token(self.kite)
+        client_changed = self.kite is not kite or new_token != old_token
         self.kite = kite
-        if changed:
+        if client_changed:
             self._last_loaded = None
             self._no_kite_warned = False
-        return self.load(force=force or changed)
+        return self.load(force=force or client_changed)
 
     def is_ready(self) -> bool:
         return bool(self.kite and (self._instruments.get("NFO") or self._instruments.get("BFO")))
@@ -134,6 +142,18 @@ class InstrumentsManager:
             "source": "fallback",
         }
 
+    def get_lot_size(self, index_name: str) -> int:
+        """Lot size for index FUT (NFO for NIFTY/BANKNIFTY, BFO for SENSEX)."""
+        index_upper = index_name.upper()
+        inst = self.get_active_future(index_upper)
+        if inst and inst.get("lot_size"):
+            return int(inst["lot_size"])
+        return int(_FALLBACK_LOT_SIZES.get(index_upper, 1))
+
+    def get_exchange(self, index_name: str) -> str:
+        """Futures exchange segment: NFO (NIFTY/BANKNIFTY) or BFO (SENSEX)."""
+        return self._segment_for_index(index_name)
+
     def get_active_future(self, index_name: str) -> Optional[Dict[str, Any]]:
         """
         Returns the front-month (nearest expiry) active future for the given index.
@@ -173,7 +193,7 @@ class InstrumentsManager:
 
         futures.sort(key=lambda x: x.get("expiry"))
         active = futures[0]
-        logger.info(
+        logger.debug(
             f"[Instruments] Selected active future for {index_name}: "
             f"{active['tradingsymbol']} (expiry {active.get('expiry')})"
         )
@@ -188,34 +208,40 @@ class InstrumentsManager:
             "source": "kite",
         }
 
+    def fetch_ltp_batch(self, keys: List[str]) -> Dict[str, float]:
+        """Batch LTP fetch — one rate-limit slot for many instruments."""
+        if not self.kite or not keys:
+            return {}
+        unique = list(dict.fromkeys(k for k in keys if k))
+        try:
+            from .kite_rate_limit import quote_limiter
+
+            quote_limiter.wait()
+            data = self.kite.ltp(unique) or {}
+            out: Dict[str, float] = {}
+            for key in unique:
+                row = data.get(key) or {}
+                if row.get("last_price"):
+                    out[key] = float(row["last_price"])
+            return out
+        except Exception as exc:
+            logger.debug("fetch_ltp_batch failed: %s", exc)
+            return {}
+
     def fetch_ltp(self, tradingsymbol: str, exchange: str = "NFO") -> Optional[float]:
         """Fetch LTP via Kite REST using the documented exchange:tradingsymbol key."""
         if not self.kite or not tradingsymbol:
             return None
         key = ltp_key(tradingsymbol, exchange)
-        try:
-            from .kite_rate_limit import quote_limiter
-            quote_limiter.wait()
-            data = self.kite.ltp([key])
-            if key in data and data[key].get("last_price"):
-                return float(data[key]["last_price"])
-        except Exception as exc:
-            logger.debug("fetch_ltp failed for %s: %s", key, exc)
-        return None
+        prices = self.fetch_ltp_batch([key])
+        return prices.get(key)
 
     def fetch_index_spot_ltp(self, index_name: str) -> Optional[float]:
         key = INDEX_SPOT_LTP_KEYS.get(index_name.upper())
         if not key or not self.kite:
             return None
-        try:
-            from .kite_rate_limit import quote_limiter
-            quote_limiter.wait()
-            data = self.kite.ltp([key])
-            if key in data and data[key].get("last_price"):
-                return float(data[key]["last_price"])
-        except Exception as exc:
-            logger.debug("fetch_index_spot_ltp failed for %s: %s", key, exc)
-        return None
+        prices = self.fetch_ltp_batch([key])
+        return prices.get(key)
 
     def get_instrument_token(self, tradingsymbol: str, exchange: str = "NFO") -> Optional[int]:
         """Helper to get token by tradingsymbol."""

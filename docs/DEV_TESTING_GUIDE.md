@@ -1,4 +1,4 @@
-# Closed-Market Development & Testing Guide
+# Aegis — Closed-Market Development & Testing Guide
 
 **Purpose**: Enable fast, safe, high-fidelity development and testing of the full trading engine (strategy logic, ATR, regime detection, risk gates, dashboard, logging, state machine, etc.) **without waiting for market hours**.
 
@@ -8,7 +8,7 @@ This guide documents every developer tool added in June 2026 for exactly this us
 
 ## Why This Matters
 
-Retail algo developers waste enormous time waiting for market hours. The NiftyFuturesAlgo system now provides first-class support for closed-market development while preserving every safety guarantee around real capital.
+Retail algo developers waste enormous time waiting for market hours. The Aegis system now provides first-class support for closed-market development while preserving every safety guarantee around real capital.
 
 All features below are:
 - **Only active in paper/forced-dry-run mode**
@@ -128,7 +128,7 @@ ist_time: 2026-06-02 11:30:00 (FIXED for testing)
 
 Located in: `app/strategy.py` (`_try_load_realistic_vol_from_cache`)
 
-When you have real historical cache files (from previous backtest runs or the Algo Lab), this seeds `current_atr` and `fast_atr` with actual recent volatility for that specific index instead of generic defaults.
+When you have real historical cache files (from previous backtest runs or Aegis), this seeds `current_atr` and `fast_atr` with actual recent volatility for that specific index instead of generic defaults.
 
 Activate with:
 ```powershell
@@ -161,8 +161,26 @@ Focus on the latest `logs/run_*.log`. Search for `PROPOSED_BUT_REJECTED_BY_GATES
 
 ### Workflow C – Time-Sensitive Logic (Windows, Expiry, Resets)
 ```powershell
-python run.py --dev --fixed-time "2026-06-26 09:50:00"   # just before a known expiry
+# Nifty weekly expiry Tuesday — Level 1 (soft caution, entries still allowed)
+python run.py --dev --fixed-time "2026-06-16 10:30:00"
+
+# Same Tuesday after noon — Level 2 (hard block on new entries)
+python run.py --dev --fixed-time "2026-06-16 12:30:00"
+
+# Monthly / other expiry dates
+python run.py --dev --fixed-time "2026-06-26 09:50:00"
 ```
+
+**What to verify for expiry / gamma caution** (see `docs/EXPIRY_GAMMA_CAUTION.md`):
+
+| Check | 10:30 IST on expiry Tuesday | 12:30 IST on expiry Tuesday |
+|-------|----------------------------|----------------------------|
+| `check_regime_gates()` (options) | `allowed: true`, `expiry_caution: true` | `allowed: false`, reason contains *gamma caution* |
+| Futures `_is_edge_case()` | No `expiry_day_safety` reject | `expiry_day_safety` reject |
+| Options cycle (if enabled) | May propose IC when flat | `skipped: true`, `reason: regime_gate` → ledger `options.cycle.skip` |
+| Dashboard Regime gates badge | **Caution** (amber) | **Blocked** (red) |
+
+Unit tests: `tests/test_options_execution.py` (expiry morning vs after-cutoff).
 
 ### Workflow D – High-Fidelity Validation (Best Practice)
 1. Start the system with `--dev`
